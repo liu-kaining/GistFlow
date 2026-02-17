@@ -1,0 +1,65 @@
+# GistFlow Docker Compose Configuration
+# For production deployment
+
+version: '3.8'
+
+services:
+  gistflow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gistflow:latest
+    container_name: gistflow_agent
+    restart: unless-stopped
+
+    # Environment configuration
+    env_file:
+      - .env
+
+    # Volume mounts for persistence
+    volumes:
+      - ./data:/app/data      # SQLite database persistence
+      - ./logs:/app/logs      # Log files
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    # Resource limits (optional, adjust as needed)
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "from gistflow.config import get_settings; get_settings()"]
+      interval: 5m
+      timeout: 30s
+      retries: 3
+      start_period: 10s
+
+    # Network configuration
+    networks:
+      - gistflow_network
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+
+# Network definition
+networks:
+  gistflow_network:
+    driver: bridge
+
+# Named volumes (alternative to bind mounts)
+# volumes:
+#   gistflow_data:
+#   gistflow_logs:

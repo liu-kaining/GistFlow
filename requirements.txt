@@ -1,0 +1,31 @@
+# Email ingestion
+imap-tools>=1.0.0
+
+# HTML parsing and cleaning
+beautifulsoup4>=4.12.0
+markdownify>=0.11.0
+lxml>=4.9.0
+
+# LLM orchestration
+langchain>=0.2.0
+langchain-core>=0.2.0
+langchain-openai>=0.1.0
+
+# Data validation
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# Notion API
+notion-client>=2.2.0
+
+# Scheduler
+apscheduler>=3.10.0
+
+# Logging
+loguru>=0.7.0
+
+# HTTP client (for LLM)
+httpx>=0.27.0
+
+# Retry mechanism
+tenacity>=8.2.0
