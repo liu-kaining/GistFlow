@@ -117,6 +117,28 @@ class Settings(BaseSettings):
         gt=0,
     )
 
+    # Prompt Configuration
+    PROMPT_SYSTEM_PATH: str = Field(
+        default="./prompts/system_prompt.txt",
+        description="Path to system prompt template file",
+    )
+    PROMPT_USER_PATH: str = Field(
+        default="./prompts/user_prompt_template.txt",
+        description="Path to user prompt template file",
+    )
+
+    # Web Server Configuration
+    WEB_SERVER_PORT: int = Field(
+        default=5800,
+        description="Port for web management interface",
+        gt=0,
+        lt=65536,
+    )
+    WEB_SERVER_HOST: str = Field(
+        default="0.0.0.0",
+        description="Host for web management interface (0.0.0.0 for Docker/external access, 127.0.0.1 for local only)",
+    )
+
     @field_validator("LOG_LEVEL")
     @classmethod
     def validate_log_level(cls, value: str) -> str:

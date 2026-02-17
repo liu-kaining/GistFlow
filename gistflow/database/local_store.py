@@ -71,6 +71,24 @@ class LocalStore:
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS prompt_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                prompt_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_by TEXT DEFAULT 'system'
+            )
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_prompt_type ON prompt_history(prompt_type)
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_prompt_created_at ON prompt_history(created_at DESC)
+        """)
+
         conn.commit()
         logger.info(f"Database initialized at: {self.db_path}")
 
@@ -221,3 +239,92 @@ class LocalStore:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Context manager exit."""
         self.close()
+
+    def save_prompt_version(
+        self,
+        prompt_type: str,
+        content: str,
+        created_by: str = "system",
+    ) -> int:
+        """
+        Save a prompt version to history.
+
+        Args:
+            prompt_type: Type of prompt ('system' or 'user').
+            content: Prompt content.
+            created_by: Creator identifier (default: 'system').
+
+        Returns:
+            ID of the saved prompt version.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO prompt_history (prompt_type, content, created_by)
+            VALUES (?, ?, ?)
+        """, (prompt_type, content, created_by))
+
+        conn.commit()
+        prompt_id = cursor.lastrowid
+        logger.debug(f"Saved prompt version: {prompt_type} (id: {prompt_id})")
+        return prompt_id
+
+    def get_prompt_history(
+        self,
+        prompt_type: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """
+        Get prompt history.
+
+        Args:
+            prompt_type: Filter by prompt type ('system' or 'user'). None for all.
+            limit: Maximum number of records to return.
+
+        Returns:
+            List of prompt history records.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        if prompt_type:
+            cursor.execute("""
+                SELECT id, prompt_type, content, created_at, created_by
+                FROM prompt_history
+                WHERE prompt_type = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, (prompt_type, limit))
+        else:
+            cursor.execute("""
+                SELECT id, prompt_type, content, created_at, created_by
+                FROM prompt_history
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, (limit,))
+
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    def get_prompt_version(self, prompt_id: int) -> Optional[dict]:
+        """
+        Get a specific prompt version by ID.
+
+        Args:
+            prompt_id: Prompt version ID.
+
+        Returns:
+            Prompt version record or None if not found.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT id, prompt_type, content, created_at, created_by
+            FROM prompt_history
+            WHERE id = ?
+        """, (prompt_id,))
+
+        row = cursor.fetchone()
+        return dict(row) if row else None

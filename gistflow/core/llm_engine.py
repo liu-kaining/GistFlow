@@ -4,6 +4,7 @@ Uses LangChain to interact with LLM and force structured JSON output.
 """
 
 import time
+from pathlib import Path
 from typing import Optional
 
 from langchain_core.prompts import ChatPromptTemplate, HumanMessagePromptTemplate, SystemMessagePromptTemplate
@@ -16,8 +17,8 @@ from gistflow.config import Settings
 from gistflow.models import Gist
 
 
-# System prompt for the LLM
-SYSTEM_PROMPT = """You are an expert Tech Information Analyst. Your goal is to process incoming emails (newsletters, technical updates, blogs) and extract high-value knowledge.
+# Default system prompt (fallback if file not found)
+DEFAULT_SYSTEM_PROMPT = """You are an expert Tech Information Analyst. Your goal is to process incoming emails (newsletters, technical updates, blogs) and extract high-value knowledge.
 
 Input: Raw email content (Markdown format).
 Output: A valid JSON object strictly following the `Gist` schema.
@@ -36,8 +37,8 @@ Rules:
 Remember: Output MUST be a valid JSON object matching the schema exactly."""
 
 
-# User prompt template
-USER_PROMPT_TEMPLATE = """Here is the email content:
+# Default user prompt template (fallback if file not found)
+DEFAULT_USER_PROMPT_TEMPLATE = """Here is the email content:
 ---
 {email_content}
 ---
@@ -65,6 +66,9 @@ class GistEngine:
         """
         self.settings = settings
         self.llm = self._init_llm()
+        self._system_prompt: str = ""
+        self._user_prompt_template: str = ""
+        self._load_prompts()
         self.prompt = self._build_prompt()
 
         logger.info(
@@ -88,17 +92,70 @@ class GistEngine:
             timeout=60,
         )
 
+    def _load_prompts(self) -> None:
+        """
+        Load prompts from files specified in settings.
+        Falls back to default prompts if files are not found.
+        """
+        # Load system prompt
+        system_path = Path(self.settings.PROMPT_SYSTEM_PATH)
+        if system_path.exists():
+            try:
+                self._system_prompt = system_path.read_text(encoding="utf-8").strip()
+                logger.debug(f"Loaded system prompt from: {system_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load system prompt from {system_path}: {e}, using default")
+                self._system_prompt = DEFAULT_SYSTEM_PROMPT
+        else:
+            logger.warning(f"System prompt file not found: {system_path}, using default")
+            self._system_prompt = DEFAULT_SYSTEM_PROMPT
+
+        # Load user prompt template
+        user_path = Path(self.settings.PROMPT_USER_PATH)
+        if user_path.exists():
+            try:
+                self._user_prompt_template = user_path.read_text(encoding="utf-8").strip()
+                logger.debug(f"Loaded user prompt template from: {user_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load user prompt template from {user_path}: {e}, using default")
+                self._user_prompt_template = DEFAULT_USER_PROMPT_TEMPLATE
+        else:
+            logger.warning(f"User prompt template file not found: {user_path}, using default")
+            self._user_prompt_template = DEFAULT_USER_PROMPT_TEMPLATE
+
+    def reload_prompts(self) -> None:
+        """
+        Reload prompts from files.
+        Useful for hot-reloading prompts without restarting the service.
+        """
+        logger.info("Reloading prompts from files...")
+        self._load_prompts()
+        self.prompt = self._build_prompt()
+        logger.info("Prompts reloaded successfully")
+
     def _build_prompt(self) -> ChatPromptTemplate:
         """
-        Build the chat prompt template.
+        Build the chat prompt template from loaded prompts.
 
         Returns:
             ChatPromptTemplate for the LLM.
         """
         return ChatPromptTemplate.from_messages([
-            SystemMessagePromptTemplate.from_template(SYSTEM_PROMPT),
-            HumanMessagePromptTemplate.from_template(USER_PROMPT_TEMPLATE),
+            SystemMessagePromptTemplate.from_template(self._system_prompt),
+            HumanMessagePromptTemplate.from_template(self._user_prompt_template),
         ])
+
+    def get_prompts(self) -> dict[str, str]:
+        """
+        Get current prompt contents.
+
+        Returns:
+            Dictionary with 'system_prompt' and 'user_prompt_template'.
+        """
+        return {
+            "system_prompt": self._system_prompt,
+            "user_prompt_template": self._user_prompt_template,
+        }
 
     @retry(
         stop=stop_after_attempt(3),
@@ -125,8 +182,13 @@ class GistEngine:
         # Try structured output first
         try:
             structured_llm = self.llm.with_structured_output(Gist)
-            return structured_llm.invoke(messages)
-        except Exception:
+            gist = structured_llm.invoke(messages)
+            # Normalize mentioned_links in case LLM returns objects
+            gist = self._normalize_gist_links(gist)
+            return gist
+        except Exception as e:
+            # If structured output fails (e.g., validation error), fall back to manual parsing
+            logger.debug(f"Structured output failed, falling back to manual parsing: {e}")
             pass  # Fall through to manual parsing
 
         # Fallback: invoke directly and parse JSON manually
@@ -144,9 +206,67 @@ class GistEngine:
         # Parse JSON and create Gist
         try:
             data = json.loads(json_str)
+            
+            # Normalize mentioned_links: handle both string list and object list
+            data = self._normalize_data_links(data)
+            
             return Gist(**data)
         except (json.JSONDecodeError, TypeError) as e:
             raise ValueError(f"Failed to parse LLM output as Gist: {e}")
+
+    def _normalize_gist_links(self, gist: Gist) -> Gist:
+        """
+        Normalize mentioned_links in Gist object.
+        Handles cases where LLM returns objects instead of strings.
+        
+        Args:
+            gist: Gist object to normalize.
+            
+        Returns:
+            Normalized Gist object.
+        """
+        if not gist.mentioned_links:
+            return gist
+        
+        normalized_links = []
+        for link in gist.mentioned_links:
+            if isinstance(link, str):
+                normalized_links.append(link)
+            elif isinstance(link, dict):
+                # Extract URL from object
+                url = link.get("url") or link.get("link") or link.get("href") or link.get("value")
+                if url and isinstance(url, str):
+                    normalized_links.append(url)
+                else:
+                    logger.warning(f"Skipping link object without valid URL: {link}")
+        
+        gist.mentioned_links = normalized_links
+        return gist
+    
+    def _normalize_data_links(self, data: dict) -> dict:
+        """
+        Normalize mentioned_links in data dictionary.
+        
+        Args:
+            data: Dictionary containing Gist data.
+            
+        Returns:
+            Normalized dictionary.
+        """
+        if "mentioned_links" in data and data["mentioned_links"]:
+            normalized_links = []
+            for link in data["mentioned_links"]:
+                if isinstance(link, str):
+                    normalized_links.append(link)
+                elif isinstance(link, dict):
+                    # Extract URL from object (could be 'url', 'link', 'href', etc.)
+                    url = link.get("url") or link.get("link") or link.get("href") or link.get("value")
+                    if url and isinstance(url, str):
+                        normalized_links.append(url)
+                    else:
+                        logger.warning(f"Skipping link object without valid URL: {link}")
+            data["mentioned_links"] = normalized_links
+        return data
 
     def extract_gist(
         self,

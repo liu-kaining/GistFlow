@@ -1,0 +1,11 @@
+Here is the email content:
+---
+{email_content}
+---
+
+Email metadata:
+- Sender: {sender}
+- Subject: {subject}
+- Date: {date}
+
+Extract the gist now. Output strictly JSON following the schema.

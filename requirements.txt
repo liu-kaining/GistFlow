@@ -29,3 +29,6 @@ httpx>=0.27.0
 
 # Retry mechanism
 tenacity>=8.2.0
+
+# Web framework
+flask>=3.0.0

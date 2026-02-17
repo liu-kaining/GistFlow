@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import threading
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from imap_tools.errors import ImapToolsError
@@ -24,6 +26,7 @@ from gistflow.core import ContentCleaner, EmailFetcher, GistEngine, LocalPublish
 from gistflow.database import LocalStore
 from gistflow.models import Gist, RawEmail
 from gistflow.utils import setup_logger
+from gistflow.web import create_app
 
 
 class GistFlowPipeline:
@@ -50,6 +53,8 @@ class GistFlowPipeline:
         self._init_publishers()
 
         self._shutdown_requested = False
+        self.scheduler: Optional[BackgroundScheduler] = None
+        self._web_thread: Optional[threading.Thread] = None
         self._setup_signal_handlers()
 
         # Log publisher status
@@ -267,10 +272,27 @@ class GistFlowPipeline:
 
         return stats
 
+    def start_web_server(self) -> None:
+        """
+        Start Flask web server in a separate thread.
+        """
+        app = create_app(pipeline_instance=self, local_store=self.local_store)
+        host = self.settings.WEB_SERVER_HOST
+        port = self.settings.WEB_SERVER_PORT
+
+        def run_server():
+            logger.info(f"Starting web server on {host}:{port}")
+            app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+
+        self._web_thread = threading.Thread(target=run_server, daemon=True)
+        self._web_thread.start()
+        logger.info(f"Web management interface available at http://{host}:{port}")
+
     def run_scheduled(self) -> None:
         """
         Run the pipeline with scheduling.
         Uses APScheduler to run at configured intervals.
+        Also starts the web management interface.
         """
         scheduler = BackgroundScheduler()
 
@@ -287,6 +309,10 @@ class GistFlowPipeline:
         logger.info(f"Starting scheduler with {self.settings.CHECK_INTERVAL_MINUTES} minute interval")
 
         scheduler.start()
+        self.scheduler = scheduler
+
+        # Start web server
+        self.start_web_server()
 
         try:
             # Run once immediately on startup
@@ -295,8 +321,9 @@ class GistFlowPipeline:
 
             # Keep the main thread alive
             logger.info("Scheduler started. Press Ctrl+C to stop.")
+            import time
             while not self._shutdown_requested:
-                signal.pause()
+                time.sleep(1)  # Sleep for 1 second and check shutdown flag
 
         except (KeyboardInterrupt, SystemExit):
             logger.info("Shutting down scheduler...")

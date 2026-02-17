@@ -182,8 +182,10 @@ class NotionPublisher:
             },
         }
 
-        # Sender (select) - optional
+        # Sender (select or rich_text) - optional
+        # Try select first, fallback to rich_text if select fails
         if gist.sender:
+            # Use select format (single-select)
             properties["Sender"] = {
                 "select": {"name": gist.sender[:100]}
             }

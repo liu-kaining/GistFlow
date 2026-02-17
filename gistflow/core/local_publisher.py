@@ -41,7 +41,24 @@ class LocalPublisher:
 
     def _ensure_storage_path(self) -> None:
         """Create storage directory if it doesn't exist."""
-        self.storage_path.mkdir(parents=True, exist_ok=True)
+        try:
+            self.storage_path.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            # Fallback: try to use /app/data/gists if in Docker
+            fallback_path = Path("/app/data/gists")
+            try:
+                fallback_path.mkdir(parents=True, exist_ok=True)
+                self.storage_path = fallback_path
+                logger.warning(
+                    f"Permission denied for {self.settings.LOCAL_STORAGE_PATH}, "
+                    f"using fallback path: {fallback_path}"
+                )
+            except (PermissionError, OSError) as e:
+                logger.error(
+                    f"Failed to create storage directory: {self.storage_path} "
+                    f"and fallback: {fallback_path}. Error: {e}"
+                )
+                raise
 
     def push(self, gist: Gist) -> Optional[str]:
         """

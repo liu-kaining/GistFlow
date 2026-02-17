@@ -1,8 +1,10 @@
 # GistFlow Dockerfile
 # Multi-stage build for optimized image size
+# Uses domestic mirror sources for better accessibility in China
 
 # Stage 1: Builder
-FROM python:3.11-slim as builder
+# Use domestic Docker mirror
+FROM docker.m.daocloud.io/library/python:3.11-slim AS builder
 
 WORKDIR /build
 
@@ -17,12 +19,13 @@ COPY requirements.txt .
 # Create virtual environment and install dependencies
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
 
+# Configure pip to use domestic mirror source
+RUN pip install --no-cache-dir --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple && \
+    pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # Stage 2: Runtime
-FROM python:3.11-slim
+FROM docker.m.daocloud.io/library/python:3.11-slim
 
 # Labels
 LABEL maintainer="GistFlow Team"
@@ -46,10 +49,15 @@ COPY --from=builder /opt/venv /opt/venv
 # Copy application code
 COPY --chown=gistflow:gistflow gistflow ./gistflow
 COPY --chown=gistflow:gistflow main.py .
+COPY --chown=gistflow:gistflow tests ./tests
+COPY --chown=gistflow:gistflow prompts ./prompts
 
 # Create directories for data and logs
 RUN mkdir -p /app/data /app/logs && \
     chown -R gistflow:gistflow /app/data /app/logs
+
+# Expose web server port
+EXPOSE 5800
 
 # Switch to non-root user
 USER gistflow

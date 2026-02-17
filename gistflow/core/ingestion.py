@@ -289,7 +289,7 @@ class EmailFetcher:
     def mark_as_processed(self, email_id: str) -> None:
         """
         Mark an email as processed in Gmail.
-        Removes all matching labels (only after successful Notion write).
+        Removes all matching labels and marks as read (only after successful Notion write).
 
         Args:
             email_id: Gmail Message-ID to mark as processed.
@@ -311,7 +311,14 @@ class EmailFetcher:
                 except ImapToolsError as e:
                     logger.warning(f"Could not remove label '{label}': {e}")
 
-            logger.info(f"Email {email_id} marked as processed in Gmail (removed labels: {matching_labels})")
+            # Mark email as read (\\Seen flag)
+            try:
+                mailbox.flag(email_id, ['\\Seen'], True)
+                logger.debug(f"Marked email {email_id} as read")
+            except ImapToolsError as e:
+                logger.warning(f"Could not mark email as read: {e}")
+
+            logger.info(f"Email {email_id} marked as processed in Gmail (removed labels: {matching_labels}, marked as read)")
 
         except ImapToolsError as e:
             logger.error(f"Failed to mark email as processed: {e}")

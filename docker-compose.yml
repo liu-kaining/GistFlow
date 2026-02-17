@@ -1,7 +1,4 @@
 # GistFlow Docker Compose Configuration
-# For production deployment
-
-version: '3.8'
 
 services:
   gistflow:
@@ -16,10 +13,15 @@ services:
     env_file:
       - .env
 
+    # Port mapping for web interface
+    ports:
+      - "5800:5800"          # Web management interface
+
     # Volume mounts for persistence
     volumes:
       - ./data:/app/data      # SQLite database persistence
       - ./logs:/app/logs      # Log files
+      - ./prompts:/app/prompts # Prompt files (for editing)
 
     # Logging configuration
     logging:
@@ -46,20 +48,12 @@ services:
       retries: 3
       start_period: 10s
 
-    # Network configuration
-    networks:
-      - gistflow_network
-
     # Security options
     security_opt:
       - no-new-privileges:true
 
-# Network definition
-networks:
-  gistflow_network:
-    driver: bridge
-
-# Named volumes (alternative to bind mounts)
-# volumes:
-#   gistflow_data:
-#   gistflow_logs:
+# Note: Using default bridge network (no custom network needed for single service)
+# If you need custom network, uncomment below:
+# networks:
+#   gistflow_network:
+#     driver: bridge

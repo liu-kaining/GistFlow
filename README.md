@@ -53,9 +53,14 @@ python main.py --once
 # 定时运行（每30分钟自动处理）
 python main.py
 
-# Docker 运行
+# Docker 运行（推荐）
 docker-compose up -d
 ```
+
+> 💡 **提示**：
+> - 推荐使用 Docker 运行，详细指南请查看 [docs/GUIDE.md](./docs/GUIDE.md)
+> - Dockerfile 已配置使用国内镜像源，适合国内环境使用
+> - 完整使用指南、配置说明和故障排查都在 [docs/GUIDE.md](./docs/GUIDE.md)
 
 ## 项目结构
 
@@ -86,7 +91,12 @@ GistFlow/
 ├── docker-compose.yml  # 容器编排
 ├── pyproject.toml      # 项目配置
 ├── requirements.txt    # 依赖列表
-└── .env.example        # 环境变量模板
+├── .env.example        # 环境变量模板
+└── docs/               # 文档目录
+    ├── README.md       # 文档索引
+    ├── DOCKER_GUIDE.md # Docker 运行指南
+    ├── DOCKER_TROUBLESHOOTING.md # Docker 问题排查
+    └── spec/           # 项目规范文档
 ```
 
 ## 数据流管道
@@ -249,3 +259,16 @@ sender: "Tech Weekly"
 | LLM 响应较慢 | ℹ️ 正常 | 视 API 服务而定，约 1-3 分钟/封 |
 
 **状态：代码完整，本地测试通过，配置环境变量后即可运行！**
+
+## 📚 文档
+
+所有文档已整理到 `docs/` 目录：
+
+- **[docs/README.md](./docs/README.md)** - 文档索引
+- **[docs/DOCKER_GUIDE.md](./docs/DOCKER_GUIDE.md)** - Docker 运行完整指南
+- **[docs/DOCKER_TROUBLESHOOTING.md](./docs/DOCKER_TROUBLESHOOTING.md)** - Docker 问题排查
+- **[docs/spec/](./docs/spec/)** - 项目规范和设计文档
+
+## 🐛 问题排查
+
+遇到问题？查看 [Docker 问题排查指南](./docs/DOCKER_TROUBLESHOOTING.md)
