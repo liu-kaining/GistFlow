@@ -124,6 +124,10 @@ class NotionPublisher:
         except ValueError as e:
             logger.error(f"Notion property mapping error for gist '{gist.title}': {e}")
             return None
+        except Exception as e:
+            # Catch-all for any unexpected errors
+            logger.exception(f"Unexpected error publishing gist '{gist.title}' to Notion: {e}")
+            return None
 
     def _append_blocks_in_chunks(self, page_id: str, blocks: list[dict]) -> None:
         """
@@ -133,11 +137,22 @@ class NotionPublisher:
             page_id: The Notion page ID.
             blocks: List of block dictionaries to append.
         """
+        if not blocks:
+            return
+
         chunk_size = 100  # Notion has a limit of 100 blocks per request
 
         for i in range(0, len(blocks), chunk_size):
             chunk = blocks[i:i + chunk_size]
-            self._append_blocks_with_retry(page_id, chunk)
+            try:
+                self._append_blocks_with_retry(page_id, chunk)
+            except (APIResponseError, HTTPResponseError) as e:
+                logger.error(f"Failed to append blocks chunk {i//chunk_size + 1} to page {page_id}: {e}")
+                # Continue with next chunk even if one fails
+                continue
+            except Exception as e:
+                logger.exception(f"Unexpected error appending blocks chunk {i//chunk_size + 1}: {e}")
+                continue
 
     def _build_properties(self, gist: Gist) -> dict:
         """

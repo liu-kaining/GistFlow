@@ -37,15 +37,24 @@ class GistFlowPipeline:
 
     def __init__(self) -> None:
         """Initialize the pipeline with all required components."""
-        self.settings = get_settings()
-        setup_logger(
-            log_level=self.settings.LOG_LEVEL,
-            log_dir=Path(__file__).parent / "logs",
-        )
+        try:
+            logger.info("Loading settings...")
+            self.settings = get_settings()
+            logger.info("Setting up logger...")
+            setup_logger(
+                log_level=self.settings.LOG_LEVEL,
+                log_dir=Path(__file__).parent / "logs",
+            )
 
-        self.local_store = LocalStore()
-        self.cleaner = ContentCleaner(self.settings)
-        self.llm_engine = GistEngine(self.settings)
+            logger.info("Initializing LocalStore...")
+            self.local_store = LocalStore()
+            logger.info("Initializing ContentCleaner...")
+            self.cleaner = ContentCleaner(self.settings)
+            logger.info("Initializing GistEngine...")
+            self.llm_engine = GistEngine(self.settings)
+        except Exception as e:
+            logger.exception(f"Failed to initialize pipeline components: {e}")
+            raise
 
         # Dual publishers
         self.notion_publisher: Optional[NotionPublisher] = None
@@ -140,16 +149,25 @@ class GistFlowPipeline:
             return gist
 
         except APIError as e:
+            error_msg = f"LLM API error: {str(e)}"
             logger.error(f"LLM API error processing email {email.message_id}: {e}")
-            self.local_store.record_error(email.message_id, f"LLM API error: {e}")
+            self.local_store.record_error(email.message_id, error_msg)
             return None
         except (APIResponseError, HTTPResponseError) as e:
+            error_msg = f"Notion API error: {str(e)}"
             logger.error(f"Notion API error processing email {email.message_id}: {e}")
-            self.local_store.record_error(email.message_id, f"Notion API error: {e}")
+            self.local_store.record_error(email.message_id, error_msg)
             return None
         except ValueError as e:
+            error_msg = f"Data validation error: {str(e)}"
             logger.error(f"Data validation error processing email {email.message_id}: {e}")
-            self.local_store.record_error(email.message_id, f"Validation error: {e}")
+            self.local_store.record_error(email.message_id, error_msg)
+            return None
+        except Exception as e:
+            # Catch-all for any unexpected errors
+            error_msg = f"Unexpected error: {type(e).__name__}: {str(e)}"
+            logger.exception(f"Unexpected error processing email {email.message_id}: {e}")
+            self.local_store.record_error(email.message_id, error_msg)
             return None
 
     def _publish_gist(self, gist: Gist) -> None:
@@ -220,35 +238,49 @@ class GistFlowPipeline:
                         logger.info("Shutdown requested, stopping processing")
                         break
 
-                    gist = self.process_single_email(email)
+                    try:
+                        gist = self.process_single_email(email)
 
-                    if gist:
-                        stats["emails_processed"] += 1
+                        if gist:
+                            stats["emails_processed"] += 1
 
-                        # Mark as processed in local store
-                        self.local_store.mark_processed(
-                            message_id=email.message_id,
-                            subject=email.subject,
-                            sender=email.sender,
-                            score=gist.score,
-                            is_spam=gist.is_spam_or_irrelevant,
-                            notion_page_id=gist.notion_page_id,
-                        )
+                            # Mark as processed in local store
+                            try:
+                                self.local_store.mark_processed(
+                                    message_id=email.message_id,
+                                    subject=email.subject,
+                                    sender=email.sender,
+                                    score=gist.score,
+                                    is_spam=gist.is_spam_or_irrelevant,
+                                    notion_page_id=gist.notion_page_id,
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to mark email as processed in database: {e}")
+                                # Continue processing other emails even if DB write fails
 
-                        # Mark as processed in Gmail (only after successful processing)
-                        try:
-                            fetcher.mark_as_processed(email.message_id)
-                        except ImapToolsError as e:
-                            logger.warning(f"Failed to mark email as processed in Gmail: {e}")
+                            # Mark as processed in Gmail (only after successful processing)
+                            try:
+                                fetcher.mark_as_processed(email.message_id)
+                            except ImapToolsError as e:
+                                logger.warning(f"Failed to mark email as processed in Gmail: {e}")
+                                # Don't fail the whole pipeline if Gmail marking fails
 
-                        if gist.is_valuable():
-                            stats["gists_created"] += 1
-                            if gist.notion_page_id:
-                                stats["notion_published"] += 1
-                            if hasattr(gist, 'local_file_path') and gist.local_file_path:
-                                stats["local_saved"] += 1
-                    else:
+                            if gist.is_valuable():
+                                stats["gists_created"] += 1
+                                if gist.notion_page_id:
+                                    stats["notion_published"] += 1
+                                if hasattr(gist, 'local_file_path') and gist.local_file_path:
+                                    stats["local_saved"] += 1
+                        else:
+                            stats["emails_skipped"] += 1
+                    except Exception as e:
+                        # Catch any unexpected errors during email processing
+                        logger.exception(f"Unexpected error processing email {email.message_id}: {e}")
+                        self.local_store.record_error(email.message_id, f"Unexpected error: {type(e).__name__}: {str(e)}")
                         stats["emails_skipped"] += 1
+                        stats["errors"] += 1
+                        # Continue processing next email
+                        continue
 
         except ImapToolsError as e:
             logger.error(f"IMAP error during pipeline execution: {e}")
@@ -276,17 +308,28 @@ class GistFlowPipeline:
         """
         Start Flask web server in a separate thread.
         """
-        app = create_app(pipeline_instance=self, local_store=self.local_store)
-        host = self.settings.WEB_SERVER_HOST
-        port = self.settings.WEB_SERVER_PORT
+        try:
+            app = create_app(pipeline_instance=self, local_store=self.local_store)
+            host = self.settings.WEB_SERVER_HOST
+            port = self.settings.WEB_SERVER_PORT
 
-        def run_server():
-            logger.info(f"Starting web server on {host}:{port}")
-            app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+            def run_server():
+                try:
+                    logger.info(f"Starting web server on {host}:{port}")
+                    app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+                except Exception as e:
+                    logger.exception(f"Web server error: {e}")
+                    raise
 
-        self._web_thread = threading.Thread(target=run_server, daemon=True)
-        self._web_thread.start()
-        logger.info(f"Web management interface available at http://{host}:{port}")
+            self._web_thread = threading.Thread(target=run_server, daemon=True)
+            self._web_thread.start()
+            # Give the server a moment to start
+            import time
+            time.sleep(0.5)
+            logger.info(f"Web management interface available at http://{host}:{port}")
+        except Exception as e:
+            logger.exception(f"Failed to start web server: {e}")
+            raise
 
     def run_scheduled(self) -> None:
         """
@@ -346,7 +389,9 @@ def main() -> None:
     logger.info("=" * 60)
 
     try:
+        logger.info("Initializing GistFlow pipeline...")
         pipeline = GistFlowPipeline()
+        logger.info("Pipeline initialized successfully")
 
         # Check if running in one-shot mode
         if len(sys.argv) > 1 and sys.argv[1] == "--once":
@@ -358,13 +403,20 @@ def main() -> None:
             sys.exit(0 if stats["errors"] == 0 else 1)
         else:
             # Run with scheduler
+            logger.info("Starting scheduled mode with web interface...")
             pipeline.run_scheduled()
 
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+        sys.exit(0)
     except ValueError as e:
-        logger.error(f"Configuration error: {e}")
+        logger.exception(f"Configuration error: {e}")
         sys.exit(1)
     except sqlite3.Error as e:
-        logger.error(f"Database error: {e}")
+        logger.exception(f"Database error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.exception(f"Unexpected error during startup: {e}")
         sys.exit(1)
 
 

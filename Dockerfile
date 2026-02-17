@@ -51,6 +51,7 @@ COPY --chown=gistflow:gistflow gistflow ./gistflow
 COPY --chown=gistflow:gistflow main.py .
 COPY --chown=gistflow:gistflow tests ./tests
 COPY --chown=gistflow:gistflow prompts ./prompts
+COPY --chown=gistflow:gistflow .env.example ./.env.example
 
 # Create directories for data and logs
 RUN mkdir -p /app/data /app/logs && \

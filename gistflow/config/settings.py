@@ -3,8 +3,76 @@ Configuration management using Pydantic Settings.
 Loads environment variables and provides type-safe configuration access.
 """
 
+from pathlib import Path
+from shutil import copyfile
+
+from loguru import logger
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def ensure_env_file() -> None:
+    """
+    Ensure .env file exists. If not, create it from .env.example.
+    This is called before loading settings to ensure configuration is available.
+    Note: In Docker environments, .env is typically provided via env_file mount,
+    so this function will skip creation if the file already exists or if we don't
+    have write permissions.
+    """
+    env_path = Path(".env")
+    
+    # Check if .env already exists and is readable
+    if env_path.exists():
+        # Check if we can read it
+        try:
+            env_path.read_text(encoding="utf-8")
+            logger.debug(".env file already exists and is readable")
+            return
+        except PermissionError:
+            logger.warning(".env file exists but is not readable, skipping auto-creation")
+            return
+        except Exception as e:
+            logger.debug(f".env file exists but has issues: {e}, will try to create new one")
+
+    # Try multiple possible locations for .env.example
+    possible_paths = [
+        Path(".env.example"),  # Current directory
+        Path(__file__).parent.parent.parent / ".env.example",  # Project root
+        Path("/app/.env.example"),  # Docker container path
+    ]
+    
+    env_example_path = None
+    for path in possible_paths:
+        if path.exists():
+            env_example_path = path
+            logger.debug(f"Found .env.example at {path}")
+            break
+
+    if env_example_path is None:
+        logger.debug(".env.example file not found in any expected location")
+        logger.debug(f"Searched paths: {[str(p) for p in possible_paths]}")
+        # In Docker, .env is usually provided via env_file, so this is not an error
+        return
+
+    # Try to create .env file, but handle permission errors gracefully
+    try:
+        # Check if we have write permission to the directory
+        env_dir = env_path.parent
+        if not env_dir.exists():
+            env_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Try to create the file
+        copyfile(env_example_path, env_path)
+        logger.info(f"Created .env file from .env.example at {env_path.absolute()}")
+        logger.info("Please edit .env file with your actual configuration values")
+    except PermissionError:
+        # In Docker, .env is often mounted read-only or provided via env_file
+        logger.debug(f"Permission denied creating .env file (likely mounted via docker-compose env_file)")
+        logger.debug("This is normal in Docker environments where .env is provided via env_file")
+    except Exception as e:
+        logger.warning(f"Failed to create .env file from .env.example: {e}")
+        # Don't raise - allow the application to continue
+        # Settings will load from environment variables if .env is not available
 
 
 class Settings(BaseSettings):
@@ -164,9 +232,12 @@ def get_settings() -> Settings:
     """
     Get the global settings instance.
     Uses lazy initialization to allow for environment variable changes.
+    Ensures .env file exists before loading settings.
     """
     global _settings
     if _settings is None:
+        # Ensure .env file exists before loading settings
+        ensure_env_file()
         _settings = Settings()
     return _settings
 

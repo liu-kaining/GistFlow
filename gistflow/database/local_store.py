@@ -4,6 +4,7 @@ Records processed Message-IDs to prevent duplicate processing.
 """
 
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -28,69 +29,104 @@ class LocalStore:
             db_path = Path(__file__).parent.parent / "data" / "gistflow.db"
 
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Ensure parent directory exists
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.error(f"Failed to create database directory {self.db_path.parent}: {e}")
+            raise
 
         self._conn: Optional[sqlite3.Connection] = None
-        self._init_db()
+        # Initialize thread-local storage
+        self._thread_local = threading.local()
+        
+        # Initialize database schema
+        try:
+            self._init_db()
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {e}")
+            raise
 
     def _get_connection(self) -> sqlite3.Connection:
-        """Get or create database connection."""
-        if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path))
-            self._conn.row_factory = sqlite3.Row
-        return self._conn
+        """
+        Get or create database connection.
+        Uses thread-local storage to ensure each thread has its own connection,
+        preventing SQLite threading issues.
+        """
+        # Check if this thread already has a connection
+        # Use getattr with default None to safely check for connection attribute
+        conn = getattr(self._thread_local, 'connection', None)
+        
+        if conn is None:
+            # Create a new connection for this thread with check_same_thread=False
+            # This allows the connection to be used across threads safely
+            try:
+                conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+                conn.row_factory = sqlite3.Row
+                self._thread_local.connection = conn
+                thread_id = threading.get_ident()
+                logger.debug(f"Created database connection for thread {thread_id}")
+            except Exception as e:
+                logger.error(f"Failed to create database connection: {e}")
+                raise
+        
+        return conn
 
     def _init_db(self) -> None:
         """Initialize database schema."""
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
 
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS processed_emails (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_id TEXT UNIQUE NOT NULL,
-                subject TEXT,
-                sender TEXT,
-                processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                score INTEGER,
-                is_spam BOOLEAN DEFAULT FALSE,
-                notion_page_id TEXT
-            )
-        """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS processed_emails (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id TEXT UNIQUE NOT NULL,
+                    subject TEXT,
+                    sender TEXT,
+                    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    score INTEGER,
+                    is_spam BOOLEAN DEFAULT FALSE,
+                    notion_page_id TEXT
+                )
+            """)
 
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_message_id ON processed_emails(message_id)
-        """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_message_id ON processed_emails(message_id)
+            """)
 
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS processing_errors (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_id TEXT NOT NULL,
-                error_message TEXT,
-                error_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS processing_errors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id TEXT NOT NULL,
+                    error_message TEXT,
+                    error_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS prompt_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                prompt_type TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                created_by TEXT DEFAULT 'system'
-            )
-        """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS prompt_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    prompt_type TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_by TEXT DEFAULT 'system'
+                )
+            """)
 
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_prompt_type ON prompt_history(prompt_type)
-        """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_prompt_type ON prompt_history(prompt_type)
+            """)
 
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_prompt_created_at ON prompt_history(created_at DESC)
-        """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_prompt_created_at ON prompt_history(created_at DESC)
+            """)
 
-        conn.commit()
-        logger.info(f"Database initialized at: {self.db_path}")
+            conn.commit()
+            logger.info(f"Database initialized at: {self.db_path}")
+        except Exception as e:
+            logger.error(f"Failed to initialize database at {self.db_path}: {e}")
+            raise
 
     def is_processed(self, message_id: str) -> bool:
         """
@@ -223,14 +259,33 @@ class LocalStore:
         """, (limit,))
 
         rows = cursor.fetchall()
-        return [dict(row) for row in rows]
+        return [{key: row[key] for key in row.keys()} for row in rows]
 
     def close(self) -> None:
-        """Close database connection."""
+        """Close database connection(s)."""
+        # Close thread-local connections
+        # Note: We can't iterate over all threads, so we only close the current thread's connection
+        if hasattr(self, '_thread_local'):
+            try:
+                if hasattr(self._thread_local, 'connection') and self._thread_local.connection:
+                    try:
+                        self._thread_local.connection.close()
+                        self._thread_local.connection = None
+                        logger.debug("Thread-local database connection closed")
+                    except Exception as e:
+                        logger.warning(f"Error closing thread-local connection: {e}")
+            except AttributeError:
+                # thread_local may not have connection attribute in this thread
+                pass
+        
+        # Close main connection if exists (for backward compatibility)
         if self._conn:
-            self._conn.close()
-            self._conn = None
-            logger.debug("Database connection closed")
+            try:
+                self._conn.close()
+                self._conn = None
+                logger.debug("Main database connection closed")
+            except Exception as e:
+                logger.warning(f"Error closing main connection: {e}")
 
     def __enter__(self) -> "LocalStore":
         """Context manager entry."""
@@ -305,7 +360,7 @@ class LocalStore:
             """, (limit,))
 
         rows = cursor.fetchall()
-        return [dict(row) for row in rows]
+        return [{key: row[key] for key in row.keys()} for row in rows]
 
     def get_prompt_version(self, prompt_id: int) -> Optional[dict]:
         """
@@ -327,4 +382,4 @@ class LocalStore:
         """, (prompt_id,))
 
         row = cursor.fetchone()
-        return dict(row) if row else None
+        return {key: row[key] for key in row.keys()} if row else None

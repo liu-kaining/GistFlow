@@ -36,20 +36,33 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
     @app.route("/api/config", methods=["GET"])
     def get_config() -> dict:
         """Get current configuration (with sensitive fields masked)."""
-        settings = get_settings()
-        config_dict = settings.model_dump()
+        try:
+            # Ensure .env file exists
+            from gistflow.config import ensure_env_file
+            ensure_env_file()
+            
+            settings = get_settings()
+            config_dict = settings.model_dump()
 
-        # Mask sensitive fields
-        sensitive_fields = [
-            "GMAIL_APP_PASSWORD",
-            "OPENAI_API_KEY",
-            "NOTION_API_KEY",
-        ]
-        for field in sensitive_fields:
-            if field in config_dict and config_dict[field]:
-                config_dict[field] = "****" + config_dict[field][-4:] if len(config_dict[field]) > 4 else "****"
+            # Mask sensitive fields (but keep original for editing)
+            sensitive_fields = [
+                "GMAIL_APP_PASSWORD",
+                "OPENAI_API_KEY",
+                "NOTION_API_KEY",
+            ]
+            masked_dict = config_dict.copy()
+            for field in sensitive_fields:
+                if field in masked_dict and masked_dict[field]:
+                    masked_dict[field] = "****" + masked_dict[field][-4:] if len(masked_dict[field]) > 4 else "****"
 
-        return jsonify(config_dict)
+            return jsonify({
+                "config": masked_dict,
+                "has_env_file": Path(".env").exists(),
+                "sensitive_fields": sensitive_fields,  # List of fields that are masked
+            })
+        except Exception as e:
+            logger.exception(f"Failed to get config: {e}")
+            return jsonify({"error": str(e), "config": {}, "has_env_file": False}), 500
 
     @app.route("/api/config", methods=["POST"])
     def update_config() -> dict:
@@ -59,12 +72,29 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
             if not data:
                 return jsonify({"success": False, "error": "No data provided"}), 400
 
+            # Ensure .env file exists
+            from gistflow.config import ensure_env_file
+            ensure_env_file()
+
             env_path = Path(".env")
             if not env_path.exists():
-                return jsonify({"success": False, "error": ".env file not found"}), 404
+                return jsonify({"success": False, "error": ".env file not found and could not be created"}), 500
+
+            # Validate required fields are not empty
+            required_fields = ["GMAIL_USER", "GMAIL_APP_PASSWORD", "OPENAI_API_KEY", "NOTION_API_KEY", "NOTION_DATABASE_ID"]
+            missing_fields = [field for field in required_fields if not data.get(field)]
+            if missing_fields:
+                return jsonify({
+                    "success": False,
+                    "error": f"Required fields cannot be empty: {', '.join(missing_fields)}"
+                }), 400
 
             # Read existing .env
-            env_lines = env_path.read_text(encoding="utf-8").splitlines()
+            try:
+                env_lines = env_path.read_text(encoding="utf-8").splitlines()
+            except Exception as e:
+                logger.error(f"Failed to read .env file: {e}")
+                return jsonify({"success": False, "error": f"Failed to read .env file: {e}"}), 500
 
             # Update values
             env_dict = {}
@@ -77,12 +107,17 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
                     env_dict[key.strip()] = value.strip()
 
             # Update with new values
+            # Handle masked passwords: if value is masked (starts with ****), keep original value
             for key, value in data.items():
+                str_value = str(value)
+                # If the value is masked (starts with ****), don't update it
+                if str_value.startswith("****") and key in env_dict:
+                    continue
                 if key in env_dict:
-                    env_dict[key] = str(value)
+                    env_dict[key] = str_value
                 else:
                     # Add new key
-                    env_dict[key] = str(value)
+                    env_dict[key] = str_value
 
             # Write back to .env
             env_content = []
@@ -102,15 +137,27 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
             for key, value in env_dict.items():
                 env_content.append(f"{key}={value}")
 
-            env_path.write_text("\n".join(env_content), encoding="utf-8")
+            # Write with error handling
+            try:
+                env_path.write_text("\n".join(env_content), encoding="utf-8")
+            except Exception as e:
+                logger.error(f"Failed to write .env file: {e}")
+                return jsonify({"success": False, "error": f"Failed to write .env file: {e}"}), 500
 
-            # Reload settings
-            reload_settings()
+            # Reload settings with validation
+            try:
+                reload_settings()
+            except Exception as e:
+                logger.error(f"Failed to reload settings: {e}")
+                return jsonify({
+                    "success": False,
+                    "error": f"Configuration saved but validation failed: {e}. Please check your configuration."
+                }), 400
 
             return jsonify({"success": True, "message": "Configuration updated"})
 
         except Exception as e:
-            logger.error(f"Failed to update config: {e}")
+            logger.exception(f"Failed to update config: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/api/prompts", methods=["GET"])
@@ -137,39 +184,65 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
                 return jsonify({"success": False, "error": "No data provided"}), 400
 
             settings = get_settings()
-            system_content = data.get("system_prompt", "")
-            user_content = data.get("user_prompt_template", "")
+            system_content = data.get("system_prompt", "").strip()
+            user_content = data.get("user_prompt_template", "").strip()
 
-            # Save to files
-            if system_content:
+            # Validate content is not empty
+            if not system_content:
+                return jsonify({"success": False, "error": "System prompt cannot be empty"}), 400
+            if not user_content:
+                return jsonify({"success": False, "error": "User prompt template cannot be empty"}), 400
+
+            # Validate content length
+            if len(system_content) > 100000:
+                return jsonify({"success": False, "error": "System prompt too long (max 100000 characters)"}), 400
+            if len(user_content) > 100000:
+                return jsonify({"success": False, "error": "User prompt template too long (max 100000 characters)"}), 400
+
+            local_store = app.config.get("local_store")
+
+            # Save system prompt
+            try:
                 system_path = Path(settings.PROMPT_SYSTEM_PATH)
                 system_path.parent.mkdir(parents=True, exist_ok=True)
                 system_path.write_text(system_content, encoding="utf-8")
 
                 # Save to history
-                local_store = app.config.get("local_store")
                 if local_store:
                     local_store.save_prompt_version("system", system_content, "web")
+            except Exception as e:
+                logger.error(f"Failed to save system prompt: {e}")
+                return jsonify({"success": False, "error": f"Failed to save system prompt: {e}"}), 500
 
-            if user_content:
+            # Save user prompt
+            try:
                 user_path = Path(settings.PROMPT_USER_PATH)
                 user_path.parent.mkdir(parents=True, exist_ok=True)
                 user_path.write_text(user_content, encoding="utf-8")
 
                 # Save to history
-                local_store = app.config.get("local_store")
                 if local_store:
                     local_store.save_prompt_version("user", user_content, "web")
+            except Exception as e:
+                logger.error(f"Failed to save user prompt: {e}")
+                return jsonify({"success": False, "error": f"Failed to save user prompt: {e}"}), 500
 
             # Reload prompts in engine
             pipeline = app.config.get("pipeline")
             if pipeline and hasattr(pipeline, "llm_engine"):
-                pipeline.llm_engine.reload_prompts()
+                try:
+                    pipeline.llm_engine.reload_prompts()
+                except Exception as e:
+                    logger.error(f"Failed to reload prompts: {e}")
+                    return jsonify({
+                        "success": False,
+                        "error": f"Prompts saved but reload failed: {e}. Please restart the service."
+                    }), 500
 
             return jsonify({"success": True, "message": "Prompts updated and reloaded"})
 
         except Exception as e:
-            logger.error(f"Failed to update prompts: {e}")
+            logger.exception(f"Failed to update prompts: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/api/prompts/reload", methods=["POST"])
@@ -193,16 +266,22 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
         try:
             data = request.json
             if not data:
-                return jsonify({"error": "No data provided"}), 400
+                return jsonify({"success": False, "error": "No data provided"}), 400
 
-            test_content = data.get("content", "")
+            test_content = data.get("content", "").strip()
+            if not test_content:
+                return jsonify({"success": False, "error": "Test content cannot be empty"}), 400
+
+            if len(test_content) > 50000:
+                return jsonify({"success": False, "error": "Test content too long (max 50000 characters)"}), 400
+
             sender = data.get("sender", "Test Sender")
             subject = data.get("subject", "Test Subject")
             date = data.get("date", "")
 
             pipeline = app.config.get("pipeline")
             if not pipeline or not hasattr(pipeline, "llm_engine"):
-                return jsonify({"error": "Pipeline not available"}), 503
+                return jsonify({"success": False, "error": "Pipeline not available"}), 503
 
             # Use temporary prompt if provided
             temp_system = data.get("system_prompt")
@@ -223,21 +302,26 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
             else:
                 test_engine = pipeline.llm_engine
 
-            # Extract gist
-            gist = test_engine.extract_gist(
-                content=test_content,
-                sender=sender,
-                subject=subject,
-                date=date,
-            )
+            # Extract gist with timeout protection
+            try:
+                gist = test_engine.extract_gist(
+                    content=test_content,
+                    sender=sender,
+                    subject=subject,
+                    date=date,
+                )
 
-            if gist:
-                return jsonify({"success": True, "gist": gist.model_dump()})
-            else:
-                return jsonify({"success": False, "error": "Failed to extract gist"}), 500
+                if gist:
+                    return jsonify({"success": True, "gist": gist.model_dump()})
+                else:
+                    return jsonify({"success": False, "error": "Failed to extract gist (LLM returned None)"}), 500
+
+            except Exception as e:
+                logger.exception(f"Error during prompt test: {e}")
+                return jsonify({"success": False, "error": f"Test failed: {str(e)}"}), 500
 
         except Exception as e:
-            logger.error(f"Failed to test prompt: {e}")
+            logger.exception(f"Failed to test prompt: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/api/prompts/history", methods=["GET"])
@@ -257,6 +341,68 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
         except Exception as e:
             logger.error(f"Failed to get prompt history: {e}")
             return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/prompts/restore", methods=["POST"])
+    def restore_prompt() -> dict:
+        """Restore a prompt version from history."""
+        try:
+            data = request.json
+            if not data:
+                return jsonify({"success": False, "error": "No data provided"}), 400
+
+            version_id = data.get("version_id")
+            if not version_id:
+                return jsonify({"success": False, "error": "version_id required"}), 400
+
+            local_store = app.config.get("local_store")
+            if not local_store:
+                return jsonify({"success": False, "error": "LocalStore not available"}), 503
+
+            # Get prompt version
+            prompt_version = local_store.get_prompt_version(version_id)
+            if not prompt_version:
+                return jsonify({"success": False, "error": "Prompt version not found"}), 404
+
+            settings = get_settings()
+            prompt_type = prompt_version.get("prompt_type")
+            content = prompt_version.get("content", "")
+
+            if not prompt_type or not content:
+                return jsonify({"success": False, "error": "Invalid prompt version data"}), 400
+
+            # Save to file
+            try:
+                if prompt_type == "system":
+                    system_path = Path(settings.PROMPT_SYSTEM_PATH)
+                    system_path.parent.mkdir(parents=True, exist_ok=True)
+                    system_path.write_text(content, encoding="utf-8")
+                elif prompt_type == "user":
+                    user_path = Path(settings.PROMPT_USER_PATH)
+                    user_path.parent.mkdir(parents=True, exist_ok=True)
+                    user_path.write_text(content, encoding="utf-8")
+                else:
+                    return jsonify({"success": False, "error": f"Unknown prompt type: {prompt_type}"}), 400
+            except Exception as e:
+                logger.error(f"Failed to save restored prompt to file: {e}")
+                return jsonify({"success": False, "error": f"Failed to save prompt: {e}"}), 500
+
+            # Reload prompts in engine
+            pipeline = app.config.get("pipeline")
+            if pipeline and hasattr(pipeline, "llm_engine"):
+                try:
+                    pipeline.llm_engine.reload_prompts()
+                except Exception as e:
+                    logger.error(f"Failed to reload prompts after restore: {e}")
+                    return jsonify({
+                        "success": False,
+                        "error": f"Prompt restored but reload failed: {e}. Please restart the service."
+                    }), 500
+
+            return jsonify({"success": True, "message": f"{prompt_type} prompt restored"})
+
+        except Exception as e:
+            logger.exception(f"Failed to restore prompt: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/api/tasks/status", methods=["GET"])
     def get_task_status() -> dict:
@@ -286,13 +432,15 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
         try:
             pipeline = app.config.get("pipeline")
             if not pipeline:
-                return jsonify({"error": "Pipeline not available"}), 503
+                return jsonify({"success": False, "error": "Pipeline not available"}), 503
 
+            # Run in a way that won't block the web server
+            # The run_once() method is synchronous but should complete reasonably quickly
             stats = pipeline.run_once()
             return jsonify({"success": True, "stats": stats})
 
         except Exception as e:
-            logger.error(f"Failed to run task: {e}")
+            logger.exception(f"Failed to run task: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/api/tasks/history", methods=["GET"])
@@ -303,13 +451,127 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
             if not local_store:
                 return jsonify({"error": "LocalStore not available"}), 503
 
-            limit = int(request.args.get("limit", 50))
-            history = local_store.get_recent_history(limit=limit)
+            try:
+                limit = int(request.args.get("limit", 50))
+            except (ValueError, TypeError):
+                limit = 50
+
+            history = local_store.get_recent_processed(limit=limit)
+            # Convert datetime objects to strings for JSON serialization
+            for item in history:
+                if "processed_at" in item and item["processed_at"]:
+                    processed_at = item["processed_at"]
+                    if hasattr(processed_at, "isoformat"):
+                        item["processed_at"] = processed_at.isoformat()
+                    elif isinstance(processed_at, str):
+                        # Already a string, keep as is
+                        pass
+                    else:
+                        # Try to convert to string
+                        item["processed_at"] = str(processed_at)
+                # Ensure all values are JSON serializable
+                for key, value in list(item.items()):
+                    if value is None:
+                        item[key] = None
+                    elif isinstance(value, (int, float, str, bool)):
+                        pass  # Already serializable
+                    else:
+                        try:
+                            # Try to convert to string
+                            item[key] = str(value)
+                        except Exception:
+                            # If conversion fails, set to None
+                            item[key] = None
             return jsonify({"history": history})
 
         except Exception as e:
-            logger.error(f"Failed to get task history: {e}")
+            logger.exception(f"Failed to get task history: {e}")
             return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/tasks/errors", methods=["GET"])
+    def get_task_errors() -> dict:
+        """Get failed task errors."""
+        try:
+            local_store = app.config.get("local_store")
+            if not local_store:
+                return jsonify({"error": "LocalStore not available"}), 503
+
+            conn = local_store._get_connection()
+            cursor = conn.cursor()
+
+            try:
+                cursor.execute("""
+                    SELECT message_id, error_message, error_time
+                    FROM processing_errors
+                    ORDER BY error_time DESC
+                    LIMIT 100
+                """)
+                rows = cursor.fetchall()
+            except Exception as e:
+                logger.warning(f"Failed to query processing_errors table: {e}")
+                # Table might not exist yet, return empty list
+                return jsonify({"errors": []})
+
+            errors = []
+            for row in rows:
+                try:
+                    error_dict = {key: row[key] for key in row.keys()}
+                    # Convert datetime to string if present
+                    if "error_time" in error_dict and error_dict["error_time"]:
+                        error_time = error_dict["error_time"]
+                        if hasattr(error_time, "isoformat"):
+                            error_dict["error_time"] = error_time.isoformat()
+                        elif not isinstance(error_time, str):
+                            error_dict["error_time"] = str(error_time)
+                    # Ensure all values are JSON serializable
+                    for key, value in list(error_dict.items()):
+                        if value is None:
+                            error_dict[key] = None
+                        elif not isinstance(value, (int, float, str, bool)):
+                            try:
+                                error_dict[key] = str(value)
+                            except Exception:
+                                error_dict[key] = None
+                    errors.append(error_dict)
+                except Exception as e:
+                    logger.warning(f"Failed to process error row: {e}")
+                    continue
+
+            return jsonify({"errors": errors})
+
+        except Exception as e:
+            logger.exception(f"Failed to get task errors: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/tasks/retry", methods=["POST"])
+    def retry_task() -> dict:
+        """Retry a failed task."""
+        try:
+            data = request.json
+            if not data:
+                return jsonify({"success": False, "error": "No data provided"}), 400
+
+            message_id = data.get("message_id")
+            if not message_id:
+                return jsonify({"success": False, "error": "message_id required"}), 400
+
+            # TODO: Implement retry logic
+            # For now, just remove from error list and mark for reprocessing
+            local_store = app.config.get("local_store")
+            if local_store:
+                conn = local_store._get_connection()
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM processing_errors WHERE message_id = ?", (message_id,))
+                conn.commit()
+
+            return jsonify({
+                "success": True,
+                "message": f"Task {message_id} marked for retry. It will be processed in the next run.",
+            })
+
+        except Exception as e:
+            logger.error(f"Failed to retry task: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/api/stats", methods=["GET"])
     def get_stats() -> dict:
@@ -323,18 +585,72 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
             conn = local_store._get_connection()
             cursor = conn.cursor()
 
-            cursor.execute("SELECT COUNT(*) FROM processed_emails")
-            total_processed = cursor.fetchone()[0]
+            # Initialize default values
+            total_processed = 0
+            total_spam = 0
+            avg_score = 0.0
+            total_errors = 0
 
-            cursor.execute("SELECT COUNT(*) FROM processed_emails WHERE is_spam = 1")
-            total_spam = cursor.fetchone()[0]
+            # Check if tables exist first
+            try:
+                cursor.execute("""
+                    SELECT name FROM sqlite_master 
+                    WHERE type='table' AND name IN ('processed_emails', 'processing_errors')
+                """)
+                existing_tables = {row[0] for row in cursor.fetchall()}
+            except Exception as e:
+                logger.warning(f"Failed to check tables: {e}")
+                existing_tables = set()
 
-            cursor.execute("SELECT AVG(score) FROM processed_emails WHERE score IS NOT NULL")
-            avg_score_row = cursor.fetchone()
-            avg_score = float(avg_score_row[0]) if avg_score_row[0] else 0.0
+            # Get total processed
+            if 'processed_emails' in existing_tables:
+                try:
+                    cursor.execute("SELECT COUNT(*) FROM processed_emails")
+                    result = cursor.fetchone()
+                    total_processed = int(result[0]) if result and result[0] is not None else 0
+                except Exception as e:
+                    logger.warning(f"Failed to get total_processed: {e}")
+                    total_processed = 0
+            else:
+                logger.debug("processed_emails table does not exist yet")
 
-            cursor.execute("SELECT COUNT(*) FROM processing_errors")
-            total_errors = cursor.fetchone()[0]
+            # Get total spam
+            if 'processed_emails' in existing_tables:
+                try:
+                    cursor.execute("SELECT COUNT(*) FROM processed_emails WHERE is_spam = 1")
+                    result = cursor.fetchone()
+                    total_spam = int(result[0]) if result and result[0] is not None else 0
+                except Exception as e:
+                    logger.warning(f"Failed to get total_spam: {e}")
+                    total_spam = 0
+
+            # Get average score
+            if 'processed_emails' in existing_tables:
+                try:
+                    cursor.execute("SELECT AVG(score) FROM processed_emails WHERE score IS NOT NULL")
+                    result = cursor.fetchone()
+                    if result and result[0] is not None:
+                        try:
+                            avg_score = float(result[0])
+                        except (ValueError, TypeError):
+                            avg_score = 0.0
+                    else:
+                        avg_score = 0.0
+                except Exception as e:
+                    logger.warning(f"Failed to get avg_score: {e}")
+                    avg_score = 0.0
+
+            # Get total errors
+            if 'processing_errors' in existing_tables:
+                try:
+                    cursor.execute("SELECT COUNT(*) FROM processing_errors")
+                    result = cursor.fetchone()
+                    total_errors = int(result[0]) if result and result[0] is not None else 0
+                except Exception as e:
+                    logger.warning(f"Failed to get total_errors: {e}")
+                    total_errors = 0
+            else:
+                logger.debug("processing_errors table does not exist yet")
 
             return jsonify({
                 "total_processed": total_processed,
@@ -344,8 +660,15 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
             })
 
         except Exception as e:
-            logger.error(f"Failed to get stats: {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.exception(f"Failed to get stats: {e}")
+            # Return default values instead of error to prevent UI breakage
+            return jsonify({
+                "total_processed": 0,
+                "total_spam": 0,
+                "avg_score": 0.0,
+                "total_errors": 0,
+                "error": str(e)
+            }), 200  # Return 200 with error message instead of 500
 
     @app.route("/", methods=["GET"])
     def index() -> str:

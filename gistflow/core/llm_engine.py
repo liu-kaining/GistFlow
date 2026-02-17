@@ -329,6 +329,10 @@ class GistEngine:
         except ValueError as e:
             logger.error(f"LLM output parsing error for {original_id}: {e}")
             return None
+        except Exception as e:
+            # Catch-all for any unexpected errors
+            logger.exception(f"Unexpected error in extract_gist for {original_id}: {e}")
+            return None
 
     def extract_gist_with_fallback(
         self,
