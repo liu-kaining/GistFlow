@@ -119,8 +119,34 @@ class GistEngine:
         Raises:
             APIError: If all retries fail due to API issues.
         """
-        structured_llm = self.llm.with_structured_output(Gist)
-        return structured_llm.invoke(messages)
+        import json
+        import re
+
+        # Try structured output first
+        try:
+            structured_llm = self.llm.with_structured_output(Gist)
+            return structured_llm.invoke(messages)
+        except Exception:
+            pass  # Fall through to manual parsing
+
+        # Fallback: invoke directly and parse JSON manually
+        response = self.llm.invoke(messages)
+        raw_content = response.content if hasattr(response, 'content') else str(response)
+
+        # Try to extract JSON from markdown code blocks
+        json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', raw_content, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(1).strip()
+        else:
+            # Try raw JSON
+            json_str = raw_content.strip()
+
+        # Parse JSON and create Gist
+        try:
+            data = json.loads(json_str)
+            return Gist(**data)
+        except (json.JSONDecodeError, TypeError) as e:
+            raise ValueError(f"Failed to parse LLM output as Gist: {e}")
 
     def extract_gist(
         self,
