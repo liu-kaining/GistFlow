@@ -119,15 +119,19 @@ class EmailFetcher:
         target_label_lower = self.settings.TARGET_LABEL.lower()
 
         try:
-            # Get all available labels from Gmail
-            all_folders = list(mailbox.list_folders())
+            # Get all available labels from Gmail using folder.list()
+            all_folders = list(mailbox.folder.list())
             matching_labels: list[str] = []
 
             for folder_info in all_folders:
-                # folder_info is (flags, delimiter, name)
-                label_name = folder_info[2] if len(folder_info) > 2 else ""
+                # folder_info is FolderInfo object with 'name' attribute
+                label_name = folder_info.name
 
                 if not label_name:
+                    continue
+
+                # Skip Gmail system folders
+                if label_name.startswith('[Gmail]'):
                     continue
 
                 label_lower = label_name.lower()
@@ -188,7 +192,7 @@ class EmailFetcher:
             # Search for each matching label
             for label in matching_labels:
                 # Optimized search: only unseen emails with this label
-                search_criteria = AND(seen=False, label=label)
+                search_criteria = AND(seen=False, gmail_label=label)
 
                 # Fetch emails (newest first)
                 messages = list(mailbox.fetch(

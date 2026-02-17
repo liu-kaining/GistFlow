@@ -218,3 +218,5 @@ logs/
 # Local development
 .env.local
 .env.*.local
+
+.gists
