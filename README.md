@@ -1,7 +1,112 @@
 # GistFlow
-让信息像水一样流动，但只把金沙（Gist）留在你的知识库里
 
-## 快速开始
+> 让信息像水一样流动，但只把金沙（Gist）留在你的知识库里
+
+**GistFlow** 是一个自动化的 ETL 管道系统，从 Gmail 提取 Newsletter，通过 LLM 进行深度清洗、总结、评分，最终沉淀为 Notion 数据库中的结构化知识资产。
+
+---
+
+## 为什么需要 GistFlow？
+
+### 🎯 解决的痛点
+
+| 痛点 | 描述 | GistFlow 的解法 |
+|------|------|-----------------|
+| **推拉失衡** | 邮箱是 Push 模式，好内容与垃圾混杂，稍纵即逝 | 自动过滤、评分，只保留高价值内容 |
+| **FOMO 焦虑** | 订阅了 50+ 源，全读累死，不读焦虑 | AI 代读，只看 Notion 摘要即可 |
+| **资产为零** | 即使读了，也是过眼云烟，一个月后找不到 | 自动入库 Notion，可搜索、可追溯 |
+
+### 💡 核心价值
+
+- **释放大脑带宽** - 把"筛选"交给 AI，把"思考"留给自己
+- **构建知识复利** - 每周自动新增 20-50 条高质量技术情报
+- **成为信息策展人** - 你的 Prompt 越懂你，筛选出的信息越有价值
+
+---
+
+## ✨ 核心功能
+
+### 智能邮件获取
+- 🔍 **标签过滤** - 只处理带 `Newsletter` / `news` 标签的邮件
+- 🔒 **隐私保护** - 私人邮件不会被处理
+- ♻️ **去重机制** - SQLite 记录已处理邮件，避免重复
+
+### AI 深度处理
+- 📝 **智能摘要** - 100 字以内的 TL;DR
+- 📊 **价值评分** - 0-100 分，自动过滤低价值内容
+- 🏷️ **自动标签** - 提取 2-5 个分类标签（AI、Dev、Finance 等）
+- 💡 **核心洞察** - 提取 3-5 个关键信息点
+- 🔗 **链接提取** - 自动识别文中的工具、仓库、文章链接
+
+### 双模式存储
+- 📚 **Notion 数据库** - 结构化存储，可搜索、可协作
+- 📄 **本地文件** - Markdown / JSON 格式，离线可用
+
+### 运维友好
+- 🐳 **Docker 支持** - 一键部署，国内镜像源
+- 🌐 **Web 管理界面** - 在线配置、Prompt 调整、手动触发
+- 📈 **处理统计** - API 查询运行状态和统计信息
+
+---
+
+## 🏗️ 技术架构
+
+### 数据流管道
+
+```
+Gmail Newsletter
+      ↓
+  [Ingestion] → IMAP 获取带标签邮件
+      ↓
+  [Cleaner] → HTML 转 Markdown，去噪截断
+      ↓
+  [LLM Engine] → AI 提取摘要、评分、标签
+      ↓
+  [Publisher] → 双发布 (Notion + Local)
+      ↓
+  [Archive] → 移除标签，标记已处理
+```
+
+### 技术栈
+
+| 层级 | 技术选型 |
+|------|----------|
+| **邮箱获取** | `imap-tools` |
+| **HTML 处理** | `beautifulsoup4` + `markdownify` |
+| **LLM 编排** | `langchain` + `langchain-openai` |
+| **数据验证** | `pydantic` V2 |
+| **Notion API** | `notion-client` |
+| **调度** | `apscheduler` |
+| **日志** | `loguru` |
+| **Web** | `flask` |
+| **重试** | `tenacity` |
+
+### 项目结构
+
+```
+GistFlow/
+├── gistflow/
+│   ├── config/              # Pydantic 配置管理
+│   ├── core/
+│   │   ├── ingestion.py     # Gmail IMAP 邮件获取
+│   │   ├── cleaner.py       # HTML→Markdown 清洗
+│   │   ├── llm_engine.py    # LLM 智能提取
+│   │   ├── publisher.py     # Notion 发布
+│   │   └── local_publisher.py  # 本地文件存储
+│   ├── database/            # SQLite 去重存储
+│   ├── models/              # Pydantic 数据模型
+│   ├── utils/               # 日志等工具
+│   └── web/                 # Flask REST API
+├── prompts/                 # Prompt 模板文件
+├── main.py                  # 主程序入口
+├── Dockerfile               # Docker 镜像（国内镜像源）
+├── docker-compose.yml       # 容器编排
+└── docs/                    # 完整文档
+```
+
+---
+
+## 🚀 快速开始
 
 ### 1. 环境准备
 
@@ -26,25 +131,14 @@ pip install -r requirements.txt
 cp .env.example .env
 
 # 编辑 .env 文件，填入你的配置
-# 主要配置项：
+# 必填项：
 # - GMAIL_USER: Gmail 邮箱
 # - GMAIL_APP_PASSWORD: Gmail 应用专用密码
-# - OPENAI_API_KEY: OpenAI API 密钥
-# - NOTION_API_KEY: Notion 集成密钥
-# - NOTION_DATABASE_ID: Notion 数据库 ID
+# - OPENAI_API_KEY: LLM API 密钥
+# - OPENAI_BASE_URL: API 地址（支持 OpenAI/DeepSeek/OneAPI 等）
 ```
 
-### 3. 验证配置
-
-```bash
-# 配置验证
-python tests/test_config.py
-
-# 完整测试
-python tests/test_pipeline.py
-```
-
-### 4. 运行
+### 3. 运行
 
 ```bash
 # 单次运行（处理邮件后退出）
@@ -57,69 +151,15 @@ python main.py
 docker-compose up -d
 ```
 
-> 💡 **提示**：
-> - 推荐使用 Docker 运行，详细指南请查看 [docs/GUIDE.md](./docs/GUIDE.md)
-> - Dockerfile 已配置使用国内镜像源，适合国内环境使用
-> - 完整使用指南、配置说明和故障排查都在 [docs/GUIDE.md](./docs/GUIDE.md)
+> 💡 **提示**：推荐使用 Docker 运行，详细指南请查看 [docs/GUIDE.md](./docs/GUIDE.md)
 
-## 项目结构
+---
 
-```
-GistFlow/
-├── gistflow/
-│   ├── config/         # 配置管理
-│   │   └── settings.py
-│   ├── core/           # 核心处理模块
-│   │   ├── ingestion.py    # 邮件获取
-│   │   ├── cleaner.py      # 内容清洗
-│   │   ├── llm_engine.py   # LLM 智能提取
-│   │   └── publisher.py    # Notion 发布
-│   ├── database/       # 本地存储
-│   │   └── local_store.py
-│   ├── models/         # 数据模型
-│   │   └── schemas.py
-│   └── utils/          # 工具模块
-│       └── logger.py
-├── tests/              # 测试文件
-│   ├── test_config.py
-│   ├── test_ingestion.py
-│   ├── test_llm_engine.py
-│   ├── test_publisher.py
-│   └── test_pipeline.py
-├── main.py             # 主程序入口
-├── Dockerfile          # Docker 镜像
-├── docker-compose.yml  # 容器编排
-├── pyproject.toml      # 项目配置
-├── requirements.txt    # 依赖列表
-├── .env.example        # 环境变量模板
-└── docs/               # 文档目录
-    ├── README.md       # 文档索引
-    ├── DOCKER_GUIDE.md # Docker 运行指南
-    ├── DOCKER_TROUBLESHOOTING.md # Docker 问题排查
-    └── spec/           # 项目规范文档
-```
+## ⚙️ 配置说明
 
-## 数据流管道
+### Gmail 标签匹配
 
-```
-Gmail Newsletter
-      ↓
-  [Ingestion] → 获取带标签邮件
-      ↓
-  [Cleaner] → HTML 转 Markdown，去噪
-      ↓
-  [LLM Engine] → AI 提取摘要、评分、标签
-      ↓
-  [Publisher] → 写入 Notion 数据库
-      ↓
-  [Archive] → 标记邮件已处理
-```
-
-## Gmail 标签匹配规则
-
-**重要：GistFlow 只处理带特定标签的邮件，私人邮件不会被处理！**
-
-### 标签匹配方式
+GistFlow 只处理带特定标签的邮件，**私人邮件不会被处理**。
 
 标签匹配**不区分大小写**，自动识别以下变体：
 
@@ -129,20 +169,7 @@ Gmail Newsletter
 | News | `News`、`news`、`NEWS` |
 | Newsletters | `Newsletters`、`newsletters` |
 
-### 使用方法
-
-1. 在 Gmail 中创建标签（名称可以是 `Newsletter`、`news` 等任意变体）
-2. 将订阅的邮件打上该标签
-3. GistFlow 会自动识别并处理
-
-### 隐私保护
-
-- ✅ 只处理带标签的邮件
-- ✅ 只处理未读邮件
-- ✅ 私人邮件默认无标签，不会被处理
-- ✅ 处理后自动移除标签，避免重复处理
-
-## Notion 数据库配置
+### Notion 数据库配置
 
 创建数据库时需要以下属性：
 
@@ -156,119 +183,66 @@ Gmail Newsletter
 | Date | Date | 接收日期 |
 | Link | URL | 原始链接 |
 
-## 本地存储配置（可选）
-
-除了 Notion，GistFlow 还支持将内容保存到本地文件，适合不需要云同步的用户。
-
-### 配置项
+### 本地存储（可选）
 
 ```bash
-# .env 文件配置
-ENABLE_LOCAL_STORAGE=true          # 是否启用本地存储
-LOCAL_STORAGE_PATH=./gists         # 存储目录
-LOCAL_STORAGE_FORMAT=markdown      # 格式：markdown 或 json
+# .env 配置
+ENABLE_LOCAL_STORAGE=true       # 启用本地存储
+LOCAL_STORAGE_PATH=./gists      # 存储目录
+LOCAL_STORAGE_FORMAT=markdown   # 格式：markdown 或 json
 ```
 
-### 存储格式
+### 评分阈值配置
 
-**Markdown 格式** - 适合人类阅读，带 YAML Front Matter：
-```markdown
----
-title: "文章标题"
-score: 85
-date: 2024-05-20T10:30:00
-tags: ["AI", "Newsletter"]
-sender: "Tech Weekly"
+```bash
+# 价值评分阈值（0-100），低于此分数的内容会被跳过
+MIN_VALUE_SCORE=30
+```
+
 ---
 
-## Summary
+## 📊 开发进度
 
-这是文章摘要...
+### ✅ 全部完成
 
-## Key Insights
-
-- 洞察1
-- 洞察2
-
-## Links
-
-- [相关链接](https://example.com)
-```
-
-**JSON 格式** - 适合程序处理：
-```json
-{
-  "title": "文章标题",
-  "summary": "摘要内容",
-  "score": 85,
-  "tags": ["AI", "Newsletter"],
-  "key_insights": ["洞察1", "洞察2"],
-  "metadata": {
-    "sender": "Tech Weekly",
-    "received_at": "2024-05-20T10:30:00"
-  }
-}
-```
-
-### 使用场景
-
-| 配置 | 场景 |
-|------|------|
-| 只用 Notion | `ENABLE_LOCAL_STORAGE=false` |
-| 只用本地 | 不配置 Notion API Key |
-| 两者都用 | 默认配置（推荐） |
-
-## 开发进度
-
-### ✅ 全部完成！
-
-| 步骤 | 模块 | 状态 | 说明 |
-|------|------|------|------|
-| Step 1 | 基础设施搭建 | ✅ 完成 | 项目结构、配置管理、日志工具 |
-| Step 2 | 邮件获取模块 | ✅ 完成 | IMAP 连接、标签过滤、去重存储、内容清洗 |
-| Step 3 | LLM 智能提取 | ✅ 完成 | LangChain 集成、结构化输出、重试机制、Fallback |
-| Step 4 | Notion 写入 | ✅ 完成 | 页面创建、属性映射、内容块生成、重试机制 |
-| Step 5 | 主循环与 Docker | ✅ 完成 | 调度器、优雅关闭、Docker 部署 |
+| 模块 | 状态 | 功能 |
+|------|------|------|
+| 基础设施 | ✅ | 项目结构、配置管理、日志工具 |
+| 邮件获取 | ✅ | IMAP 连接、标签过滤、去重存储 |
+| 内容清洗 | ✅ | HTML→Markdown、去噪、截断策略 |
+| LLM 提取 | ✅ | 多模型支持、结构化输出、Fallback |
+| Notion 发布 | ✅ | 页面创建、属性映射、分块上传 |
+| 本地存储 | ✅ | Markdown/JSON 双格式 |
+| Web API | ✅ | Flask 管理界面 |
+| Docker | ✅ | 多阶段构建、国内镜像源 |
 
 ### 代码质量
 
-- [x] 所有函数包含类型注解
-- [x] 使用 Google Style Docstrings
-- [x] 具体异常捕获（无 `except Exception`）
-- [x] tenacity 重试机制
-- [x] 无 `print()` 语句（全部使用 logger）
-- [x] 符合 AI_GUIDELINES.md 规范
+- ✅ 所有函数包含类型注解
+- ✅ 使用 Google Style Docstrings
+- ✅ 具体异常捕获
+- ✅ tenacity 重试机制
+- ✅ 无 `print()` 语句
 
-### 测试验证
-
-```
-✅ Gmail IMAP 连接成功
-✅ Label 标签匹配成功（大小写不敏感）
-✅ 邮件获取与过滤正常
-✅ 本地 Markdown 存储成功
-✅ 邮件处理标记成功
-⚠️ LLM JSON 解析已修复（支持 markdown 包裹的 JSON）
-```
-
-### 已知问题
-
-| 问题 | 状态 | 说明 |
-|------|------|------|
-| LLM JSON 解析 | ✅ 已修复 | 支持 ` ```json { ... } ``` ` 格式 |
-| Notion API Token | ⏸️ 待配置 | 本地测试可跳过 |
-| LLM 响应较慢 | ℹ️ 正常 | 视 API 服务而定，约 1-3 分钟/封 |
-
-**状态：代码完整，本地测试通过，配置环境变量后即可运行！**
+---
 
 ## 📚 文档
 
-所有文档已整理到 `docs/` 目录：
+| 文档 | 说明 |
+|------|------|
+| [docs/GUIDE.md](./docs/GUIDE.md) | 完整使用指南 |
+| [docs/CODE_REVIEW.md](./docs/CODE_REVIEW.md) | 代码审查报告 |
+| [docs/spec/MANIFESTO.md](./docs/spec/MANIFESTO.md) | 项目宪章 |
+| [docs/spec/AI_GUIDELINES.md](./docs/spec/AI_GUIDELINES.md) | AI 编码规范 |
 
-- **[docs/README.md](./docs/README.md)** - 文档索引
-- **[docs/DOCKER_GUIDE.md](./docs/DOCKER_GUIDE.md)** - Docker 运行完整指南
-- **[docs/DOCKER_TROUBLESHOOTING.md](./docs/DOCKER_TROUBLESHOOTING.md)** - Docker 问题排查
-- **[docs/spec/](./docs/spec/)** - 项目规范和设计文档
+---
 
 ## 🐛 问题排查
 
 遇到问题？查看 [Docker 问题排查指南](./docs/DOCKER_TROUBLESHOOTING.md)
+
+---
+
+## 📄 License
+
+MIT License

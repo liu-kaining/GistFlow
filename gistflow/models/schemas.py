@@ -38,9 +38,18 @@ class Gist(BaseModel):
     notion_page_id: Optional[str] = Field(None, description="Notion page ID after publishing")
     local_file_path: Optional[str] = Field(None, description="Local file path after saving")
 
-    def is_valuable(self) -> bool:
-        """Check if this gist is valuable enough to save to Notion."""
-        return not self.is_spam_or_irrelevant and self.score >= 30
+    def is_valuable(self, min_score: int = 30) -> bool:
+        """
+        Check if this gist is valuable enough to save to Notion.
+
+        Args:
+            min_score: Minimum score threshold (default: 30).
+                       Can be configured via MIN_VALUE_SCORE setting.
+
+        Returns:
+            True if the gist is valuable, False otherwise.
+        """
+        return not self.is_spam_or_irrelevant and self.score >= min_score
 
 
 class RawEmail(BaseModel):

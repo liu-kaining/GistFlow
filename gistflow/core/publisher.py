@@ -96,8 +96,8 @@ class NotionPublisher:
             logger.info(f"Skipping spam/irrelevant email: {gist.title}")
             return None
 
-        if not gist.is_valuable():
-            logger.info(f"Skipping low-value email (score={gist.score}): {gist.title}")
+        if not gist.is_valuable(min_score=self.settings.MIN_VALUE_SCORE):
+            logger.info(f"Skipping low-value email (score={gist.score}, threshold={self.settings.MIN_VALUE_SCORE}): {gist.title}")
             return None
 
         try:
@@ -124,9 +124,13 @@ class NotionPublisher:
         except ValueError as e:
             logger.error(f"Notion property mapping error for gist '{gist.title}': {e}")
             return None
-        except Exception as e:
-            # Catch-all for any unexpected errors
-            logger.exception(f"Unexpected error publishing gist '{gist.title}' to Notion: {e}")
+        except (KeyError, TypeError, AttributeError) as e:
+            # Handle data structure errors during page/block building
+            logger.error(f"Data structure error building Notion page for '{gist.title}': {e}")
+            return None
+        except ConnectionError as e:
+            # Handle network connection errors
+            logger.error(f"Connection error publishing to Notion for '{gist.title}': {e}")
             return None
 
     def _append_blocks_in_chunks(self, page_id: str, blocks: list[dict]) -> None:
@@ -150,8 +154,8 @@ class NotionPublisher:
                 logger.error(f"Failed to append blocks chunk {i//chunk_size + 1} to page {page_id}: {e}")
                 # Continue with next chunk even if one fails
                 continue
-            except Exception as e:
-                logger.exception(f"Unexpected error appending blocks chunk {i//chunk_size + 1}: {e}")
+            except (ConnectionError, TimeoutError) as e:
+                logger.error(f"Network error appending blocks chunk {i//chunk_size + 1} to page {page_id}: {e}")
                 continue
 
     def _build_properties(self, gist: Gist) -> dict:

@@ -11,6 +11,7 @@ from langchain_core.prompts import ChatPromptTemplate, HumanMessagePromptTemplat
 from langchain_openai import ChatOpenAI
 from loguru import logger
 from openai import APIConnectionError, APIError, APITimeoutError, RateLimitError
+from pydantic import ValidationError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from gistflow.config import Settings
@@ -103,7 +104,7 @@ class GistEngine:
             try:
                 self._system_prompt = system_path.read_text(encoding="utf-8").strip()
                 logger.debug(f"Loaded system prompt from: {system_path}")
-            except Exception as e:
+            except (OSError, UnicodeDecodeError, PermissionError) as e:
                 logger.warning(f"Failed to load system prompt from {system_path}: {e}, using default")
                 self._system_prompt = DEFAULT_SYSTEM_PROMPT
         else:
@@ -116,7 +117,7 @@ class GistEngine:
             try:
                 self._user_prompt_template = user_path.read_text(encoding="utf-8").strip()
                 logger.debug(f"Loaded user prompt template from: {user_path}")
-            except Exception as e:
+            except (OSError, UnicodeDecodeError, PermissionError) as e:
                 logger.warning(f"Failed to load user prompt template from {user_path}: {e}, using default")
                 self._user_prompt_template = DEFAULT_USER_PROMPT_TEMPLATE
         else:
@@ -186,8 +187,8 @@ class GistEngine:
             # Normalize mentioned_links in case LLM returns objects
             gist = self._normalize_gist_links(gist)
             return gist
-        except Exception as e:
-            # If structured output fails (e.g., validation error), fall back to manual parsing
+        except (ValidationError, ValueError, TypeError, KeyError, AttributeError) as e:
+            # If structured output fails (e.g., validation error, type mismatch), fall back to manual parsing
             logger.debug(f"Structured output failed, falling back to manual parsing: {e}")
             pass  # Fall through to manual parsing
 
@@ -329,9 +330,16 @@ class GistEngine:
         except ValueError as e:
             logger.error(f"LLM output parsing error for {original_id}: {e}")
             return None
-        except Exception as e:
-            # Catch-all for any unexpected errors
-            logger.exception(f"Unexpected error in extract_gist for {original_id}: {e}")
+        except ValidationError as e:
+            logger.error(f"Gist validation error for {original_id}: {e}")
+            return None
+        except (KeyError, TypeError, AttributeError) as e:
+            # Handle data structure errors during response processing
+            logger.error(f"Data structure error in LLM response for {original_id}: {e}")
+            return None
+        except RuntimeError as e:
+            # Handle runtime errors (e.g., LangChain internal errors)
+            logger.error(f"Runtime error in LLM processing for {original_id}: {e}")
             return None
 
     def extract_gist_with_fallback(

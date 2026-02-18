@@ -185,6 +185,14 @@ class Settings(BaseSettings):
         gt=0,
     )
 
+    # Value Scoring Configuration
+    MIN_VALUE_SCORE: int = Field(
+        default=30,
+        description="Minimum score (0-100) for a gist to be considered valuable and worth saving",
+        ge=0,
+        le=100,
+    )
+
     # Prompt Configuration
     PROMPT_SYSTEM_PATH: str = Field(
         default="./prompts/system_prompt.txt",

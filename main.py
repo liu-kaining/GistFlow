@@ -141,10 +141,10 @@ class GistFlowPipeline:
             gist.received_at = email.date
 
             # Step 3: Publish (if valuable)
-            if gist.is_valuable():
+            if gist.is_valuable(min_score=self.settings.MIN_VALUE_SCORE):
                 self._publish_gist(gist)
             else:
-                logger.info(f"Skipping publish (score={gist.score}, spam={gist.is_spam_or_irrelevant})")
+                logger.info(f"Skipping publish (score={gist.score}, threshold={self.settings.MIN_VALUE_SCORE}, spam={gist.is_spam_or_irrelevant})")
 
             return gist
 
@@ -265,7 +265,7 @@ class GistFlowPipeline:
                                 logger.warning(f"Failed to mark email as processed in Gmail: {e}")
                                 # Don't fail the whole pipeline if Gmail marking fails
 
-                            if gist.is_valuable():
+                            if gist.is_valuable(min_score=self.settings.MIN_VALUE_SCORE):
                                 stats["gists_created"] += 1
                                 if gist.notion_page_id:
                                     stats["notion_published"] += 1

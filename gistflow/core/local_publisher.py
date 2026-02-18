@@ -78,8 +78,8 @@ class LocalPublisher:
             logger.info(f"Skipping spam/irrelevant email: {gist.title}")
             return None
 
-        if not gist.is_valuable():
-            logger.info(f"Skipping low-value email (score={gist.score}): {gist.title}")
+        if not gist.is_valuable(min_score=self.settings.MIN_VALUE_SCORE):
+            logger.info(f"Skipping low-value email (score={gist.score}, threshold={self.settings.MIN_VALUE_SCORE}): {gist.title}")
             return None
 
         try:
@@ -311,7 +311,7 @@ def get_publishers(settings: Settings) -> tuple:
         if settings.NOTION_API_KEY and settings.NOTION_DATABASE_ID:
             from gistflow.core.publisher import NotionPublisher
             notion_publisher = NotionPublisher(settings)
-    except Exception as e:
+    except (ImportError, ValueError, TypeError, ConnectionError) as e:
         logger.warning(f"Failed to initialize Notion publisher: {e}")
 
     # Local publisher
