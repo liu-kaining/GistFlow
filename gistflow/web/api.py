@@ -569,18 +569,34 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
 
     @app.route("/api/tasks/stop", methods=["POST"])
     def stop_task() -> dict:
-        """Stop the scheduler (shutdown)."""
+        """Stop the scheduler and any currently running task."""
         try:
             pipeline = app.config.get("pipeline")
             if not pipeline:
                 return jsonify({"success": False, "error": "Pipeline not available"}), 503
 
             if pipeline.stop_scheduler():
-                return jsonify({"success": True, "message": "调度器已停止"})
+                return jsonify({"success": True, "message": "调度器已停止，正在运行的任务也已停止"})
             return jsonify({"success": False, "error": "调度器未运行"}), 400
 
         except Exception as e:
             logger.exception(f"Failed to stop task: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+    
+    @app.route("/api/tasks/stop-current", methods=["POST"])
+    def stop_current_task() -> dict:
+        """Stop the currently running task (without stopping the scheduler)."""
+        try:
+            pipeline = app.config.get("pipeline")
+            if not pipeline:
+                return jsonify({"success": False, "error": "Pipeline not available"}), 503
+
+            if pipeline.stop_current_task():
+                return jsonify({"success": True, "message": "正在运行的任务已停止"})
+            return jsonify({"success": False, "error": "没有正在运行的任务"}), 400
+
+        except Exception as e:
+            logger.exception(f"Failed to stop current task: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/api/tasks/pause", methods=["POST"])

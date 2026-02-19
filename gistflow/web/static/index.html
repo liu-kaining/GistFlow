@@ -322,6 +322,9 @@
                     <button onclick="stopTask()" class="bg-red-600 text-white px-5 py-2 rounded-lg font-medium text-sm hover:bg-red-700 transition">
                         停止调度
                     </button>
+                    <button id="stop-current-task-btn" onclick="stopCurrentTask()" class="bg-orange-600 text-white px-5 py-2 rounded-lg font-medium text-sm hover:bg-orange-700 transition hidden">
+                        停止当前任务
+                    </button>
                     <button onclick="loadStats()" class="bg-gray-100 text-gray-700 px-5 py-2 rounded-lg font-medium text-sm hover:bg-gray-200 transition">
                         刷新统计
                     </button>
@@ -737,6 +740,7 @@
                 const pauseBtn = document.getElementById('pause-task-btn');
                 const resumeBtn = document.getElementById('resume-task-btn');
                 const startBtn = document.getElementById('start-scheduler-btn');
+                const stopCurrentTaskBtn = document.getElementById('stop-current-task-btn');
                 const schedulerInfoEl = document.getElementById('scheduler-status-info');
                 
                 // 优先显示任务执行状态，如果没有执行中的任务，再显示调度器状态
@@ -747,12 +751,20 @@
                     // 有任务正在执行
                     if (lastRun.phase === "已中断" || lastRun.phase === "已强制重置") {
                         taskStatusHtml = '<span class="status-badge" style="background-color: #fbbf24; color: #78350f;">已中断</span>';
+                        // 任务已中断，隐藏停止按钮
+                        if (stopCurrentTaskBtn) stopCurrentTaskBtn.classList.add('hidden');
                     } else if (lastRun.phase === "执行失败") {
                         taskStatusHtml = '<span class="status-badge" style="background-color: #fee2e2; color: #991b1b;">执行失败</span>';
+                        // 任务已失败，隐藏停止按钮
+                        if (stopCurrentTaskBtn) stopCurrentTaskBtn.classList.add('hidden');
                     } else {
                         taskStatusHtml = '<span class="status-badge status-running">执行中</span>';
+                        // 任务正在执行，显示停止按钮
+                        if (stopCurrentTaskBtn) stopCurrentTaskBtn.classList.remove('hidden');
                     }
                 } else {
+                    // 没有任务在执行，隐藏停止按钮
+                    if (stopCurrentTaskBtn) stopCurrentTaskBtn.classList.add('hidden');
                     // 没有任务在执行，显示调度器状态
                     if (data.running) {
                         if (data.paused) {
@@ -870,7 +882,7 @@
         }
 
         async function stopTask() {
-            showConfirm('停止调度', '确定要停止定时任务调度吗？停止后需要重启容器才能恢复。', '停止', async () => {
+            showConfirm('停止调度', '确定要停止定时任务调度吗？同时也会停止正在运行的任务（包括手动执行的任务）。', '停止', async () => {
                 try {
                     const res = await fetch(`${API_BASE}/tasks/stop`, {method: 'POST'});
                     if (!res.ok) {
@@ -879,7 +891,28 @@
                     }
                     const data = await res.json();
                     if (data.success) {
-                        showToast('调度器已停止', 'success');
+                        showToast('调度器已停止，正在运行的任务也已停止', 'success');
+                        loadTaskStatus();
+                    } else {
+                        showToast('停止失败: ' + (data.error || '未知错误'), 'error');
+                    }
+                } catch (e) {
+                    showToast('停止失败: ' + (e.message || '未知错误'), 'error');
+                }
+            });
+        }
+
+        async function stopCurrentTask() {
+            showConfirm('停止当前任务', '确定要停止当前正在运行的任务吗？这不会停止调度器。', '停止', async () => {
+                try {
+                    const res = await fetch(`${API_BASE}/tasks/stop-current`, {method: 'POST'});
+                    if (!res.ok) {
+                        const errorData = await res.json().catch(() => ({}));
+                        throw new Error(errorData.error || `HTTP ${res.status}`);
+                    }
+                    const data = await res.json();
+                    if (data.success) {
+                        showToast('正在运行的任务已停止', 'success');
                         loadTaskStatus();
                     } else {
                         showToast('停止失败: ' + (data.error || '未知错误'), 'error');

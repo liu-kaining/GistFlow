@@ -513,6 +513,7 @@ class GistFlowPipeline:
     def stop_scheduler(self) -> bool:
         """
         Stop the scheduler (shutdown and recreate for future restart).
+        Also stops any currently running task (manual or scheduled).
 
         Returns:
             True if scheduler was stopped, False if it wasn't running.
@@ -521,12 +522,17 @@ class GistFlowPipeline:
             logger.warning("Cannot stop scheduler: scheduler not initialized")
             return False
         
-        if not self.scheduler.running:
-            logger.info("Scheduler already stopped")
-            return True
-        
         try:
             logger.info("Stopping scheduler...")
+            
+            # Stop any currently running task (both manual and scheduled)
+            if self._is_running or (self._last_run and self._last_run.get("running")):
+                logger.info("Stopping currently running task...")
+                self._shutdown_requested = True
+                # Give the task a moment to check the flag and stop gracefully
+                import time
+                time.sleep(0.5)
+            
             # If there's a running execution, mark it as finished (interrupted)
             if self._last_run and self._last_run.get("running"):
                 self._last_run["running"] = False
@@ -535,10 +541,14 @@ class GistFlowPipeline:
                 self._last_run["phase"] = "已中断"
                 if self._last_run.get("stats"):
                     self._last_run["stats"] = dict(self._last_run["stats"])
-                logger.info("Marked running execution as finished (interrupted by scheduler stop)")
+                logger.info("Marked running execution as finished (interrupted)")
             
-            # Shutdown the scheduler
-            self.scheduler.shutdown(wait=False)
+            # Reset shutdown flag for next run
+            self._shutdown_requested = False
+            
+            # Shutdown the scheduler if it's running
+            if self.scheduler.running:
+                self.scheduler.shutdown(wait=False)
             
             # Recreate scheduler so it can be started again later
             # APScheduler cannot be restarted after shutdown, so we need to recreate it
@@ -556,6 +566,37 @@ class GistFlowPipeline:
             return True
         except Exception as e:
             logger.error(f"Failed to stop scheduler: {e}")
+            return False
+    
+    def stop_current_task(self) -> bool:
+        """
+        Stop the currently running task (manual or scheduled).
+        This only stops the task, not the scheduler.
+
+        Returns:
+            True if a task was stopped, False if no task is running.
+        """
+        if not self._is_running and not (self._last_run and self._last_run.get("running")):
+            logger.info("No task is currently running")
+            return False
+        
+        try:
+            logger.info("Stopping currently running task...")
+            self._shutdown_requested = True
+            
+            # Mark task as interrupted
+            if self._last_run and self._last_run.get("running"):
+                self._last_run["running"] = False
+                if not self._last_run.get("finished_at"):
+                    self._last_run["finished_at"] = get_beijing_time().isoformat()
+                self._last_run["phase"] = "已中断"
+                if self._last_run.get("stats"):
+                    self._last_run["stats"] = dict(self._last_run["stats"])
+            
+            logger.info("Task stop requested (will stop at next check point)")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to stop current task: {e}")
             return False
 
     def pause_scheduler(self) -> bool:

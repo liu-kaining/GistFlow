@@ -3,6 +3,7 @@ Notion Publisher module for writing processed gists to Notion database.
 Handles page creation, property mapping, and content block generation.
 """
 
+import re
 from typing import Optional
 
 from loguru import logger
@@ -383,20 +384,17 @@ class NotionPublisher:
                 "divider": {}
             })
 
-        # Block 4: Raw Email Content (displayed directly, styled like email)
+        # Block 4: Raw Email Content (collapsed in toggle, preserving original email appearance)
         if gist.raw_markdown:
-            blocks.append({
-                "object": "block",
-                "type": "heading_2",
-                "heading_2": {
-                    "rich_text": [{"type": "text", "text": {"content": "📧 邮件原文"}}],
-                }
-            })
+            # Parse Markdown and convert to Notion blocks, preserving original email structure
+            content_blocks = self._parse_markdown_to_blocks(gist.raw_markdown)
             
-            # Add email header info (like email clients do)
-            email_header_blocks = []
+            # Wrap email content in a toggle block (collapsed by default)
+            toggle_children = []
+            
+            # Add email header info inside toggle
             if gist.sender:
-                email_header_blocks.append({
+                toggle_children.append({
                     "object": "block",
                     "type": "paragraph",
                     "paragraph": {
@@ -414,7 +412,7 @@ class NotionPublisher:
             if gist.received_at:
                 from datetime import datetime
                 date_str = gist.received_at.strftime("%Y年%m月%d日 %H:%M") if isinstance(gist.received_at, datetime) else str(gist.received_at)
-                email_header_blocks.append({
+                toggle_children.append({
                     "object": "block",
                     "type": "paragraph",
                     "paragraph": {
@@ -432,7 +430,7 @@ class NotionPublisher:
             if gist.original_url:
                 url_text = _truncate_for_notion(gist.original_url[:100])
                 url_link = gist.original_url[:2000] if gist.original_url.startswith("http") else None
-                email_header_blocks.append({
+                toggle_children.append({
                     "object": "block",
                     "type": "paragraph",
                     "paragraph": {
@@ -451,35 +449,30 @@ class NotionPublisher:
                     }
                 })
             
-            # Add divider after header
-            if email_header_blocks:
-                blocks.extend(email_header_blocks)
-                blocks.append({
+            if toggle_children:
+                toggle_children.append({
                     "object": "block",
                     "type": "divider",
                     "divider": {}
                 })
             
-            # Split content into chunks and display directly (no toggle, fully visible)
-            # This allows users to verify AI summary/classification/score accuracy
-            content_blocks = self._split_content_to_blocks(gist.raw_markdown)
+            # Add content blocks inside toggle, preserving original structure
+            # Don't convert to quote blocks - keep original formatting for authenticity
+            toggle_children.extend(content_blocks)
             
-            # Add all content blocks directly - styled like email body
-            # Use quote blocks for email-like indentation and styling
-            for block in content_blocks:
-                if block.get("type") == "paragraph":
-                    # Convert to quote block for email-like appearance (indented, gray background)
-                    quote_block = {
-                        "object": "block",
-                        "type": "quote",
-                        "quote": {
-                            "rich_text": block["paragraph"]["rich_text"],
-                        }
-                    }
-                    blocks.append(quote_block)
-                else:
-                    # Keep other block types as-is (headings, lists, etc.)
-                    blocks.append(block)
+            # Create toggle block with email content (collapsed by default)
+            blocks.append({
+                "object": "block",
+                "type": "toggle",
+                "toggle": {
+                    "rich_text": [{
+                        "type": "text",
+                        "text": {"content": "📧 邮件原文（点击展开）"},
+                        "annotations": {"color": "gray", "italic": True}
+                    }],
+                    "children": toggle_children
+                }
+            })
 
         # Block 5: Metadata footer (simplified, since sender is already in Properties)
         blocks.append({
@@ -505,10 +498,361 @@ class NotionPublisher:
 
         return blocks
 
+    def _extract_important_links(self, content: str, original_url: Optional[str] = None) -> list[tuple[str, str]]:
+        """
+        Extract important links from email content for prominent display.
+        Filters out common noise links (unsubscribe, social media, etc.).
+
+        Args:
+            content: Email content to extract links from.
+            original_url: Original email URL (if any).
+
+        Returns:
+            List of tuples (url, text) for important links.
+        """
+        if not content:
+            return []
+        
+        links: list[tuple[str, str]] = []
+        seen_urls: set[str] = set()
+        
+        # Noise patterns to exclude
+        noise_patterns = [
+            r'unsubscribe',
+            r'取消订阅',
+            r'退订',
+            r'view.*browser',
+            r'在浏览器中查看',
+            r'twitter\.com',
+            r'facebook\.com',
+            r'linkedin\.com',
+            r'instagram\.com',
+            r'substack\.com/redirect',  # Substack redirect links
+            r'email.*settings',
+            r'privacy.*policy',
+            r'terms.*service',
+        ]
+        
+        # Extract Markdown links: [text](url)
+        markdown_links = re.findall(r'\[([^\]]+)\]\(([^)]+)\)', content)
+        for link_text, link_url in markdown_links:
+            # Skip noise links
+            if any(re.search(pattern, link_url, re.IGNORECASE) for pattern in noise_patterns):
+                continue
+            
+            # Skip if already seen
+            if link_url in seen_urls:
+                continue
+            
+            # Only include HTTP(S) links
+            if link_url.startswith(('http://', 'https://')):
+                links.append((link_url, link_text))
+                seen_urls.add(link_url)
+        
+        # Extract plain URLs
+        url_pattern = r'https?://[^\s\)]+'
+        plain_urls = re.findall(url_pattern, content)
+        for url in plain_urls:
+            # Clean URL (remove trailing punctuation)
+            url = url.rstrip('.,;:!?)')
+            
+            # Skip noise URLs
+            if any(re.search(pattern, url, re.IGNORECASE) for pattern in noise_patterns):
+                continue
+            
+            # Skip if already seen
+            if url in seen_urls:
+                continue
+            
+            # Skip if it's the original URL (already shown)
+            if original_url and url == original_url:
+                continue
+            
+            links.append((url, url[:60] + '...' if len(url) > 60 else url))
+            seen_urls.add(url)
+        
+        # Prioritize: original URL first, then others
+        if original_url and original_url not in seen_urls:
+            links.insert(0, (original_url, "原始链接"))
+        
+        return links[:10]  # Return top 10 links
+    
+    def _parse_markdown_to_blocks(self, content: str) -> list[dict]:
+        """
+        Parse Markdown content and convert to Notion blocks with proper formatting.
+        Handles links, bold, italic, tables, headings, and code blocks.
+
+        Args:
+            content: Markdown content to parse.
+
+        Returns:
+            List of Notion block dictionaries.
+        """
+        if not content:
+            return []
+        
+        blocks: list[dict] = []
+        
+        # Minimal cleaning: only remove obvious table separator lines
+        # Preserve original email structure as much as possible
+        lines = content.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            stripped = line.strip()
+            # Only skip lines that are purely table separators (no actual content)
+            # Pattern: only contains |, -, :, spaces, and very few other characters
+            if re.match(r'^[\s|:\-]+$', stripped) and len(stripped) > 3:
+                # This is a table separator line, skip it
+                continue
+            cleaned_lines.append(line)
+        content = '\n'.join(cleaned_lines)
+        
+        # Only clean up excessive consecutive separators that break readability
+        # But preserve single | characters and normal text
+        # Replace patterns like "|||||" (5+ consecutive pipes) with single space
+        content = re.sub(r'\|{5,}', ' ', content)
+        # Replace patterns like "|---|---|" (table separator patterns) with single space
+        content = re.sub(r'\|[\s\-:]{3,}\|', ' ', content)
+        
+        # Split by double newlines (paragraphs)
+        paragraphs = content.split('\n\n')
+        
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+            
+            # Handle headings
+            if para.startswith('#'):
+                level = len(para) - len(para.lstrip('#'))
+                text = para.lstrip('#').strip()
+                if text:
+                    blocks.append({
+                        "object": "block",
+                        "type": f"heading_{min(level, 3)}",
+                        f"heading_{min(level, 3)}": {
+                            "rich_text": self._parse_markdown_inline(text)
+                        }
+                    })
+                continue
+            
+            # Handle code blocks
+            if para.startswith('```'):
+                lines_in_para = para.split('\n')
+                if len(lines_in_para) > 1:
+                    code_content = '\n'.join(lines_in_para[1:-1]) if lines_in_para[-1].strip() == '```' else '\n'.join(lines_in_para[1:])
+                    blocks.append({
+                        "object": "block",
+                        "type": "code",
+                        "code": {
+                            "rich_text": [{"type": "text", "text": {"content": _truncate_for_notion(code_content)}}],
+                            "language": "plain text"
+                        }
+                    })
+                continue
+            
+            # Handle bullet lists
+            if para.strip().startswith('- ') or para.strip().startswith('* '):
+                list_items = [line.strip() for line in para.split('\n') if line.strip().startswith(('- ', '* '))]
+                for item in list_items:
+                    item_text = item.lstrip('-* ').strip()
+                    if item_text:
+                        blocks.append({
+                            "object": "block",
+                            "type": "bulleted_list_item",
+                            "bulleted_list_item": {
+                                "rich_text": self._parse_markdown_inline(item_text)
+                            }
+                        })
+                continue
+            
+            # Handle numbered lists
+            if re.match(r'^\d+\.\s', para.strip()):
+                list_items = [line.strip() for line in para.split('\n') if re.match(r'^\d+\.\s', line.strip())]
+                for item in list_items:
+                    item_text = re.sub(r'^\d+\.\s+', '', item)
+                    if item_text:
+                        blocks.append({
+                            "object": "block",
+                            "type": "numbered_list_item",
+                            "numbered_list_item": {
+                                "rich_text": self._parse_markdown_inline(item_text)
+                            }
+                        })
+                continue
+            
+            # Regular paragraph - parse inline Markdown
+            rich_text = self._parse_markdown_inline(para)
+            if rich_text:
+                # Split into chunks if too long
+                current_chunk = []
+                current_length = 0
+                
+                for item in rich_text:
+                    item_text = item.get("text", {}).get("content", "")
+                    item_length = len(item_text)
+                    
+                    if current_length + item_length <= NOTION_RICH_TEXT_MAX:
+                        current_chunk.append(item)
+                        current_length += item_length
+                    else:
+                        # Flush current chunk
+                        if current_chunk:
+                            blocks.append({
+                                "object": "block",
+                                "type": "paragraph",
+                                "paragraph": {"rich_text": current_chunk}
+                            })
+                        # Start new chunk
+                        if item_length <= NOTION_RICH_TEXT_MAX:
+                            current_chunk = [item]
+                            current_length = item_length
+                        else:
+                            # Item itself is too long, split it
+                            for i in range(0, item_length, NOTION_RICH_TEXT_MAX):
+                                chunk_text = item_text[i:i + NOTION_RICH_TEXT_MAX]
+                                current_chunk = [{
+                                    "type": "text",
+                                    "text": {"content": chunk_text},
+                                    "annotations": item.get("annotations", {})
+                                }]
+                                blocks.append({
+                                    "object": "block",
+                                    "type": "paragraph",
+                                    "paragraph": {"rich_text": current_chunk}
+                                })
+                                current_chunk = []
+                                current_length = 0
+                
+                if current_chunk:
+                    blocks.append({
+                        "object": "block",
+                        "type": "paragraph",
+                        "paragraph": {"rich_text": current_chunk}
+                    })
+        
+        return blocks
+    
+    def _parse_markdown_inline(self, text: str) -> list[dict]:
+        """
+        Parse inline Markdown formatting (bold, italic, links) into Notion rich_text format.
+        Processes links first, then bold/italic within remaining text.
+        
+        Args:
+            text: Text with Markdown formatting.
+            
+        Returns:
+            List of Notion rich_text items.
+        """
+        if not text:
+            return []
+        
+        rich_text_items: list[dict] = []
+        i = 0
+        
+        while i < len(text):
+            # Match links: [text](url) - process links first
+            link_match = re.search(r'\[([^\]]+)\]\(([^)]+)\)', text[i:])
+            if link_match:
+                # Add text before link (may contain bold/italic)
+                before_link = text[i:i + link_match.start()]
+                if before_link:
+                    rich_text_items.extend(self._parse_bold_italic(before_link))
+                
+                # Add link (link text itself may contain formatting, but we'll keep it simple)
+                link_text = link_match.group(1)
+                link_url = link_match.group(2)
+                
+                # Parse formatting within link text
+                link_rich_text = self._parse_bold_italic(link_text)
+                # Apply link to each item
+                for item in link_rich_text:
+                    if item.get("text", {}).get("content"):
+                        item["text"]["link"] = {"url": link_url[:2000]} if link_url.startswith("http") else None
+                        if not item.get("annotations"):
+                            item["annotations"] = {}
+                        item["annotations"]["color"] = "blue"
+                        rich_text_items.append(item)
+                
+                i += link_match.end()
+                continue
+            
+            # No more links, parse remaining text for bold/italic
+            remaining = text[i:]
+            if remaining:
+                rich_text_items.extend(self._parse_bold_italic(remaining))
+            break
+        
+        return rich_text_items if rich_text_items else [{"type": "text", "text": {"content": _truncate_for_notion(text)}}]
+    
+    def _parse_bold_italic(self, text: str) -> list[dict]:
+        """
+        Parse bold (**text**) and italic (*text*) formatting.
+        
+        Args:
+            text: Text with bold/italic formatting.
+            
+        Returns:
+            List of Notion rich_text items.
+        """
+        if not text:
+            return []
+        
+        items: list[dict] = []
+        i = 0
+        
+        while i < len(text):
+            # Match bold: **text**
+            bold_match = re.search(r'\*\*([^*]+)\*\*', text[i:])
+            # Match italic: *text* (but not **text**)
+            italic_match = re.search(r'(?<!\*)\*([^*]+)\*(?!\*)', text[i:])
+            
+            # Choose the earliest match
+            matches = []
+            if bold_match:
+                matches.append((bold_match.start(), bold_match.end(), 'bold', bold_match.group(1)))
+            if italic_match:
+                matches.append((italic_match.start(), italic_match.end(), 'italic', italic_match.group(1)))
+            
+            if not matches:
+                # No more formatting, add remaining text
+                remaining = text[i:]
+                if remaining:
+                    items.append({"type": "text", "text": {"content": _truncate_for_notion(remaining)}})
+                break
+            
+            # Sort by position
+            matches.sort(key=lambda x: x[0])
+            match_start, match_end, match_type, match_content = matches[0]
+            
+            # Add text before match
+            before_match = text[i:i + match_start]
+            if before_match:
+                items.append({"type": "text", "text": {"content": _truncate_for_notion(before_match)}})
+            
+            # Add formatted text
+            annotations = {}
+            if match_type == 'bold':
+                annotations["bold"] = True
+            elif match_type == 'italic':
+                annotations["italic"] = True
+            
+            items.append({
+                "type": "text",
+                "text": {"content": _truncate_for_notion(match_content)},
+                "annotations": annotations
+            })
+            
+            i += match_end
+        
+        return items if items else [{"type": "text", "text": {"content": _truncate_for_notion(text)}}]
+    
     def _split_content_to_blocks(self, content: str, max_length: int = NOTION_RICH_TEXT_MAX) -> list[dict]:
         """
         Split long content into multiple paragraph blocks.
         Notion requires rich_text content length ≤ 2000 per block.
+        
+        DEPRECATED: Use _parse_markdown_to_blocks instead for proper Markdown parsing.
 
         Args:
             content: The content to split.
