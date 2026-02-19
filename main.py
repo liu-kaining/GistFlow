@@ -479,7 +479,7 @@ class GistFlowPipeline:
 
     def stop_scheduler(self) -> bool:
         """
-        Stop the scheduler (shutdown).
+        Stop the scheduler (shutdown and recreate for future restart).
 
         Returns:
             True if scheduler was stopped, False if it wasn't running.
@@ -498,13 +498,28 @@ class GistFlowPipeline:
             if self._last_run and self._last_run.get("running"):
                 self._last_run["running"] = False
                 if not self._last_run.get("finished_at"):
-                    self._last_run["finished_at"] = datetime.now().isoformat()
+                    self._last_run["finished_at"] = get_beijing_time().isoformat()
                 self._last_run["phase"] = "已中断"
                 if self._last_run.get("stats"):
                     self._last_run["stats"] = dict(self._last_run["stats"])
                 logger.info("Marked running execution as finished (interrupted by scheduler stop)")
+            
+            # Shutdown the scheduler
             self.scheduler.shutdown(wait=False)
-            logger.info("Scheduler stopped")
+            
+            # Recreate scheduler so it can be started again later
+            # APScheduler cannot be restarted after shutdown, so we need to recreate it
+            scheduler = BackgroundScheduler()
+            scheduler.add_job(
+                func=self.run_once,
+                trigger=IntervalTrigger(minutes=self.settings.CHECK_INTERVAL_MINUTES),
+                id="gistflow_pipeline",
+                name="GistFlow Email Processing Pipeline",
+                max_instances=1,
+                misfire_grace_time=300,
+            )
+            self.scheduler = scheduler
+            logger.info("Scheduler stopped and recreated (ready for restart)")
             return True
         except Exception as e:
             logger.error(f"Failed to stop scheduler: {e}")
