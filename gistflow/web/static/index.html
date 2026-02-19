@@ -585,14 +585,21 @@
                     try {
                         const startTime = new Date(lastRun.started_at);
                         const now = new Date();
-                        const elapsedMinutes = (now - startTime) / (1000 * 60);
-                        // 如果执行超过5分钟，且所有数据都是0，可能是卡住了
-                        if (elapsedMinutes > 5 && (stats.emails_found || 0) === 0 && (stats.emails_processed || 0) === 0) {
-                            isTimeout = true;
-                            forceStopButton = '<button onclick="resetTaskState()" class="mt-2 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 text-sm font-medium transition">强制停止</button>';
+                        // 检查时间是否有效
+                        if (isNaN(startTime.getTime()) || isNaN(now.getTime())) {
+                            // 时间解析失败，不判断超时
+                        } else {
+                            const elapsedMinutes = (now - startTime) / (1000 * 60);
+                            // 如果执行超过5分钟，且所有数据都是0，可能是卡住了
+                            // 注意：必须确保 elapsedMinutes 是正数（未来时间会被忽略）且大于5分钟，小于24小时（防止异常值）
+                            if (elapsedMinutes > 5 && elapsedMinutes < 1440 && elapsedMinutes > 0 && (stats.emails_found || 0) === 0 && (stats.emails_processed || 0) === 0) {
+                                isTimeout = true;
+                                forceStopButton = '<button onclick="resetTaskState()" class="mt-2 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 text-sm font-medium transition">强制停止</button>';
+                            }
                         }
                     } catch (e) {
                         // 忽略时间解析错误
+                        console.warn('Failed to calculate elapsed time:', e);
                     }
                 }
                 
@@ -659,7 +666,19 @@
             if (!iso) return '-';
             try {
                 const d = new Date(iso);
-                return isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN');
+                if (isNaN(d.getTime())) return iso;
+                // 转换为东八区时间（UTC+8）
+                // 使用 Asia/Shanghai 时区
+                return d.toLocaleString('zh-CN', {
+                    timeZone: 'Asia/Shanghai',
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hour12: false
+                });
             } catch (_) { return iso; }
         }
 
@@ -1154,7 +1173,26 @@
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
                             ${history.map(h => {
-                                const processedAt = h.processed_at ? (typeof h.processed_at === 'string' ? h.processed_at : new Date(h.processed_at).toLocaleString('zh-CN')) : '-';
+                                let processedAt = '-';
+                                if (h.processed_at) {
+                                    try {
+                                        const d = typeof h.processed_at === 'string' ? new Date(h.processed_at) : new Date(h.processed_at);
+                                        if (!isNaN(d.getTime())) {
+                                            processedAt = d.toLocaleString('zh-CN', {
+                                                timeZone: 'Asia/Shanghai',
+                                                year: 'numeric',
+                                                month: '2-digit',
+                                                day: '2-digit',
+                                                hour: '2-digit',
+                                                minute: '2-digit',
+                                                second: '2-digit',
+                                                hour12: false
+                                            });
+                                        }
+                                    } catch (e) {
+                                        processedAt = typeof h.processed_at === 'string' ? h.processed_at : '-';
+                                    }
+                                }
                                 const score = h.score !== null && h.score !== undefined ? h.score : '-';
                                 return `
                                 <tr class="table-row">
@@ -1213,7 +1251,26 @@
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
                             ${errors.map(e => {
-                                const errorTime = e.error_time ? (typeof e.error_time === 'string' ? e.error_time : new Date(e.error_time).toLocaleString('zh-CN')) : '-';
+                                let errorTime = '-';
+                                if (e.error_time) {
+                                    try {
+                                        const d = typeof e.error_time === 'string' ? new Date(e.error_time) : new Date(e.error_time);
+                                        if (!isNaN(d.getTime())) {
+                                            errorTime = d.toLocaleString('zh-CN', {
+                                                timeZone: 'Asia/Shanghai',
+                                                year: 'numeric',
+                                                month: '2-digit',
+                                                day: '2-digit',
+                                                hour: '2-digit',
+                                                minute: '2-digit',
+                                                second: '2-digit',
+                                                hour12: false
+                                            });
+                                        }
+                                    } catch (err) {
+                                        errorTime = typeof e.error_time === 'string' ? e.error_time : '-';
+                                    }
+                                }
                                 const messageId = e.message_id || '-';
                                 return `
                                 <tr class="table-row">

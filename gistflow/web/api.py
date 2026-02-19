@@ -515,13 +515,19 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
                     if hasattr(pipeline, "_is_running"):
                         pipeline._is_running = False
                     # 更新 _last_run 状态，如果不存在则创建
-                    from datetime import datetime
+                    from datetime import datetime, timezone, timedelta
+                    def get_beijing_time():
+                        """获取东八区（北京）时间"""
+                        tz_beijing = timezone(timedelta(hours=8))
+                        return datetime.now(tz_beijing)
+                    
                     if not hasattr(pipeline, "_last_run") or not pipeline._last_run:
                         # 如果 _last_run 不存在，创建一个基本的记录
+                        now_beijing = get_beijing_time()
                         pipeline._last_run = {
-                            "started_at": datetime.now().isoformat(),
+                            "started_at": now_beijing.isoformat(),
                             "running": False,
-                            "finished_at": datetime.now().isoformat(),
+                            "finished_at": now_beijing.isoformat(),
                             "stats": {
                                 "emails_found": 0,
                                 "emails_processed": 0,
@@ -535,9 +541,15 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
                         }
                     else:
                         # 更新现有的 _last_run
+                        from datetime import datetime, timezone, timedelta
+                        def get_beijing_time():
+                            """获取东八区（北京）时间"""
+                            tz_beijing = timezone(timedelta(hours=8))
+                            return datetime.now(tz_beijing)
+                        
                         pipeline._last_run["running"] = False
                         if not pipeline._last_run.get("finished_at"):
-                            pipeline._last_run["finished_at"] = datetime.now().isoformat()
+                            pipeline._last_run["finished_at"] = get_beijing_time().isoformat()
                         pipeline._last_run["phase"] = "执行失败"
                         # 确保 stats 中有错误计数
                         if pipeline._last_run.get("stats"):
@@ -770,8 +782,9 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
             last_run = getattr(pipeline, "_last_run", None)
             if last_run and last_run.get("running"):
                 if not last_run.get("finished_at"):
-                    from datetime import datetime
-                    last_run["finished_at"] = datetime.now().isoformat()
+                    from datetime import datetime, timezone, timedelta
+                    tz_beijing = timezone(timedelta(hours=8))
+                    last_run["finished_at"] = datetime.now(tz_beijing).isoformat()
                 last_run["running"] = False
                 last_run["phase"] = "已强制重置"
             

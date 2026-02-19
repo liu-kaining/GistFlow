@@ -8,7 +8,7 @@ Supports dual publishing: Notion and local Markdown/JSON files.
 import signal
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +28,12 @@ from gistflow.database import LocalStore
 from gistflow.models import Gist, RawEmail
 from gistflow.utils import setup_logger
 from gistflow.web import create_app
+
+
+def get_beijing_time() -> datetime:
+    """获取东八区（北京）时间"""
+    tz_beijing = timezone(timedelta(hours=8))
+    return datetime.now(tz_beijing)
 
 
 class GistFlowPipeline:
@@ -234,11 +240,14 @@ class GistFlowPipeline:
         
         self._is_running = True
         try:
+            # 使用东八区时间（UTC+8）
+            now_beijing = get_beijing_time()
+            
             logger.info("=" * 60)
-            logger.info(f"GistFlow Pipeline Run: {datetime.now().isoformat()}")
+            logger.info(f"GistFlow Pipeline Run: {now_beijing.isoformat()}")
             logger.info("=" * 60)
 
-            started_at = datetime.now().isoformat()
+            started_at = now_beijing.isoformat()
             stats = {
                 "started_at": started_at,
                 "emails_found": 0,
@@ -349,7 +358,7 @@ class GistFlowPipeline:
                 logger.exception(f"Unexpected error in run_once: {e}")
                 stats["errors"] += 1
 
-            stats["finished_at"] = datetime.now().isoformat()
+            stats["finished_at"] = get_beijing_time().isoformat()
             if self._last_run:
                 self._last_run["running"] = False
                 self._last_run["finished_at"] = stats["finished_at"]
