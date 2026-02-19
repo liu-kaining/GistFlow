@@ -161,9 +161,10 @@ class EmailFetcher:
             logger.warning(f"Failed to list folders, using configured label: {e}")
             return [self.settings.TARGET_LABEL]
 
-    def fetch_unprocessed(self, limit: Optional[int] = None) -> list[RawEmail]:
+    def fetch_unprocessed(self, limit: Optional[int] = None) -> tuple[list[RawEmail], int]:
         """
         Fetch unprocessed emails with the target label.
+        First counts total available emails, then fetches up to the limit.
 
         Label matching is case-insensitive and supports variants.
 
@@ -171,7 +172,9 @@ class EmailFetcher:
             limit: Maximum number of emails to fetch. Defaults to MAX_EMAILS_PER_RUN from settings.
 
         Returns:
-            List of RawEmail objects that haven't been processed yet.
+            Tuple of (list of RawEmail objects, total_count).
+            - List contains up to 'limit' emails that haven't been processed yet.
+            - total_count is the total number of unprocessed emails available (may be > limit).
 
         Raises:
             ImapToolsError: If IMAP operation fails.
@@ -182,6 +185,7 @@ class EmailFetcher:
         mailbox = self._ensure_connected()
         raw_emails: list[RawEmail] = []
         processed_ids: set[str] = set()
+        total_count = 0  # Total unprocessed emails available
 
         try:
             # Get matching labels (case-insensitive)
@@ -189,7 +193,31 @@ class EmailFetcher:
 
             logger.info(f"Searching for unseen emails with labels: {matching_labels}")
 
-            # Search for each matching label
+            # First pass: Count total unprocessed emails
+            all_unprocessed_uids: set[str] = set()
+            for label in matching_labels:
+                search_criteria = AND(seen=False, gmail_label=label)
+                messages = list(mailbox.fetch(
+                    criteria=search_criteria,
+                    mark_seen=False,
+                    reverse=True,
+                ))
+                
+                for msg in messages:
+                    # Skip if already counted from another label
+                    if msg.uid in all_unprocessed_uids:
+                        continue
+                    
+                    # Check if already processed (deduplication)
+                    if self.local_store.is_processed(msg.uid):
+                        continue
+                    
+                    all_unprocessed_uids.add(msg.uid)
+            
+            total_count = len(all_unprocessed_uids)
+            logger.info(f"Found {total_count} total unprocessed emails (will fetch up to {limit})")
+
+            # Second pass: Fetch emails up to limit
             for label in matching_labels:
                 # Optimized search: only unseen emails with this label
                 search_criteria = AND(seen=False, gmail_label=label)
@@ -225,7 +253,11 @@ class EmailFetcher:
                 if len(raw_emails) >= limit:
                     break
 
-            logger.info(f"Returning {len(raw_emails)} unprocessed emails from labels: {matching_labels}")
+            remaining = max(0, total_count - len(raw_emails))
+            if remaining > 0:
+                logger.info(f"Returning {len(raw_emails)} unprocessed emails (total: {total_count}, remaining: {remaining})")
+            else:
+                logger.info(f"Returning {len(raw_emails)} unprocessed emails (all {total_count} emails will be processed)")
 
         except ImapToolsError as e:
             logger.error(f"IMAP error fetching emails: {e}")
@@ -234,7 +266,7 @@ class EmailFetcher:
             logger.error(f"Gmail IMAP error: {e}")
             raise
 
-        return raw_emails
+        return raw_emails, total_count
 
     def _convert_to_raw_email(self, msg: MailMessage) -> Optional[RawEmail]:
         """

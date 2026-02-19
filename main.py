@@ -228,6 +228,8 @@ class GistFlowPipeline:
             return {
                 "started_at": datetime.now().isoformat(),
                 "emails_found": 0,
+                "emails_total": 0,
+                "emails_remaining": 0,
                 "emails_processed": 0,
                 "emails_skipped": 0,
                 "gists_created": 0,
@@ -251,6 +253,8 @@ class GistFlowPipeline:
             stats = {
                 "started_at": started_at,
                 "emails_found": 0,
+                "emails_total": 0,  # Total unprocessed emails available
+                "emails_remaining": 0,  # Remaining after this run
                 "emails_processed": 0,
                 "emails_skipped": 0,
                 "gists_created": 0,
@@ -272,7 +276,7 @@ class GistFlowPipeline:
                         emails = []  # 设置为空列表，跳过后续处理
                     else:
                         self._last_run["phase"] = "正在获取邮件列表…"
-                        emails = fetcher.fetch_unprocessed()
+                        emails, total_count = fetcher.fetch_unprocessed()
                         
                         # 再次检查是否已被请求停止（可能在 fetch 过程中被停止）
                         if self._shutdown_requested:
@@ -281,13 +285,19 @@ class GistFlowPipeline:
                                 self._last_run["phase"] = "已中断"
                             # 即使已获取邮件，也跳过处理
                             emails = []
+                            total_count = 0
                     
                     stats["emails_found"] = len(emails)
+                    stats["emails_total"] = total_count  # Total available emails
+                    stats["emails_remaining"] = max(0, total_count - len(emails))  # Remaining after this run
                     # 同步到 _last_run，便于前端轮询时看到进度
                     if self._last_run:
                         self._last_run["stats"] = dict(stats)
 
-                    logger.info(f"Found {len(emails)} unprocessed emails")
+                    if total_count > len(emails):
+                        logger.info(f"Found {total_count} total unprocessed emails, processing {len(emails)} in this run ({total_count - len(emails)} remaining)")
+                    else:
+                        logger.info(f"Found {len(emails)} unprocessed emails (all will be processed)")
 
                     for i, email in enumerate(emails):
                         if self._last_run and self._last_run.get("running"):

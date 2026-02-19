@@ -155,7 +155,7 @@ class Settings(BaseSettings):
         gt=0,
     )
     MAX_EMAILS_PER_RUN: int = Field(
-        default=10,
+        default=50,
         description="Maximum emails to process per run (prevent rate limits)",
         gt=0,
         le=100,

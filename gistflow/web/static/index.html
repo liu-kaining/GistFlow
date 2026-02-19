@@ -664,7 +664,21 @@
                     <div class="border-t border-gray-200 pt-4">
                         <h4 class="text-gray-700 font-medium mb-2">核心数据</h4>
                         <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                            <div class="bg-gray-50 rounded-lg px-3 py-2"><span class="text-gray-500 text-xs block">发现邮件</span><span class="font-semibold text-gray-900">${stats.emails_found ?? '-'}</span></div>
+                            <div class="bg-gray-50 rounded-lg px-3 py-2">
+                                <span class="text-gray-500 text-xs block">邮件总数</span>
+                                <span class="font-semibold text-gray-900">${stats.emails_total ?? stats.emails_found ?? '-'}</span>
+                                ${stats.emails_total && stats.emails_total > (stats.emails_found || 0) ? `<span class="text-xs text-orange-600 block mt-1">(本次处理 ${stats.emails_found ?? 0} 封)</span>` : ''}
+                            </div>
+                            <div class="bg-gray-50 rounded-lg px-3 py-2">
+                                <span class="text-gray-500 text-xs block">发现邮件</span>
+                                <span class="font-semibold text-gray-900">${stats.emails_found ?? '-'}</span>
+                            </div>
+                            ${stats.emails_remaining && stats.emails_remaining > 0 ? `
+                            <div class="bg-orange-50 rounded-lg px-3 py-2 border border-orange-200">
+                                <span class="text-orange-600 text-xs block">剩余邮件</span>
+                                <span class="font-semibold text-orange-700">${stats.emails_remaining}</span>
+                            </div>
+                            ` : ''}
                             <div class="bg-gray-50 rounded-lg px-3 py-2"><span class="text-gray-500 text-xs block">已处理</span><span class="font-semibold text-gray-900">${stats.emails_processed ?? '-'}</span></div>
                             <div class="bg-gray-50 rounded-lg px-3 py-2"><span class="text-gray-500 text-xs block">跳过</span><span class="font-semibold text-gray-900">${stats.emails_skipped ?? '-'}</span></div>
                             <div class="bg-gray-50 rounded-lg px-3 py-2"><span class="text-gray-500 text-xs block">Gist 创建</span><span class="font-semibold text-gray-900">${stats.gists_created ?? '-'}</span></div>
