@@ -186,6 +186,32 @@ class LocalStore:
         except sqlite3.Error as e:
             logger.error(f"Failed to mark email as processed: {e}")
 
+    def unmark_processed(self, message_id: str) -> bool:
+        """
+        Remove an email from processed_emails and processing_errors so it can be
+        re-fetched and reprocessed in the next pipeline run.
+
+        Args:
+            message_id: Gmail Message-ID to clear.
+
+        Returns:
+            True if at least one row was deleted (processed_emails or processing_errors).
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("DELETE FROM processed_emails WHERE message_id = ?", (message_id,))
+            deleted_pe = cursor.rowcount
+            cursor.execute("DELETE FROM processing_errors WHERE message_id = ?", (message_id,))
+            deleted_err = cursor.rowcount
+            conn.commit()
+            if deleted_pe or deleted_err:
+                logger.info(f"Unmarked {message_id} for reprocess (processed_emails={deleted_pe}, errors={deleted_err})")
+            return deleted_pe > 0 or deleted_err > 0
+        except sqlite3.Error as e:
+            logger.error(f"Failed to unmark processed: {e}")
+            return False
+
     def record_error(self, message_id: str, error_message: str) -> None:
         """
         Record a processing error for an email.

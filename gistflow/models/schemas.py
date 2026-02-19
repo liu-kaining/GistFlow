@@ -51,6 +51,17 @@ class Gist(BaseModel):
         """
         return not self.is_spam_or_irrelevant and self.score >= min_score
 
+    def is_fallback(self) -> bool:
+        """
+        True if this Gist was created as fallback when LLM extraction failed.
+        Fallback gists should not be published to Notion.
+        """
+        return (
+            self.score == 30
+            and self.tags == ["待处理"]
+            and ("内容处理失败" in (self.summary or "") or (self.summary or "").strip() == "无内容")
+        )
+
 
 class RawEmail(BaseModel):
     """

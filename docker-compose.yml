@@ -12,6 +12,9 @@ services:
     # Environment configuration
     env_file:
       - .env
+    environment:
+      # 使用挂载目录存放 SQLite，重启后仪表盘/任务历史数据不丢失
+      - DATA_DIR=/app/data
 
     # Port mapping for web interface
     ports:

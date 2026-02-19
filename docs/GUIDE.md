@@ -106,9 +106,9 @@ docker-compose down -v
 
 ### 数据持久化
 
-Docker Compose 配置中已经设置了数据卷挂载：
+Docker Compose 配置中已经设置了数据卷挂载，并通过环境变量 `DATA_DIR=/app/data` 让 SQLite 数据库写在挂载目录内，重启后**仪表盘统计、任务历史、失败任务**等数据不会丢失：
 
-- `./data:/app/data` - SQLite 数据库文件
+- `./data:/app/data` - SQLite 数据库（`gistflow.db`）及本地 Gist 文件
 - `./logs:/app/logs` - 日志文件
 - `./prompts:/app/prompts` - Prompt 文件（可在宿主机编辑）
 
@@ -470,6 +470,10 @@ A:
 3. 检查防火墙设置
 4. 查看日志：`docker-compose logs gistflow`
 
+**Q: 仪表盘已处理邮件、错误数等全是 0，感觉不对？**
+
+A: 若你已手动执行过任务或跑过一段时间，但仪表盘仍显示 0，多半是 **SQLite 数据库没有写在持久化目录**。Docker 下请确保使用当前版本的 `docker-compose.yml`（内已设置 `DATA_DIR=/app/data`），这样数据库会写在挂载的 `./data` 下，重启后数据保留，仪表盘和任务历史会正常显示。若之前跑过旧版本，数据库可能在容器内未挂载的路径，重启后会被清空，所以会从 0 开始；更新后重新部署即可恢复正常持久化。
+
 ### Prompt 相关
 
 **Q: 如何修改 Prompt？**
@@ -483,6 +487,20 @@ A: 在 Web 界面点击"重新加载"，或重启容器
 **Q: 如何测试 Prompt 效果？**
 
 A: 在 Web 界面的"Prompt 管理"页面，使用"测试 Prompt"功能
+
+### 内容处理失败
+
+**Q: 任务历史里有很多「内容处理失败」的条目，怎么办？**
+
+A: 「内容处理失败」表示该邮件在 LLM 提取摘要时失败（超时、解析错误、API 限流等），系统会记录一条 fallback 记录（评分 30、标签「待处理」），**不会**再写入 Notion，避免刷屏。
+
+你可以：
+
+1. **重新处理**：在 Web 界面「任务」页的「任务历史」表格中，对某一条点击「重新处理」。该条会从处理记录中移除，下次定时运行时会重新拉取该邮件并再次尝试 LLM 提取。
+2. **排查原因**：查看容器日志（`docker-compose logs gistflow`），搜索 `LLM output parsing error`、`Using fallback Gist`、`RateLimitError` 等，确认是网络、API 限流还是 Prompt/模型问题。
+3. **调整配置**：若为 API 限流，可适当增大 `CHECK_INTERVAL_MINUTES` 或更换/升级 LLM 配置；若为解析错误，可在「Prompt 管理」中微调 Prompt 或模型。
+
+已进入 Notion 的旧「内容处理失败」条目需在 Notion 中手动删除；新版本不会再把这些 fallback 写入 Notion。
 
 ---
 

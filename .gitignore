@@ -227,3 +227,5 @@ data/gists/
 
 # Prompt history (stored in database, not files)
 prompts/.history/
+
+.cursor/

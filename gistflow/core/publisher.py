@@ -13,6 +13,16 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 from gistflow.config import Settings
 from gistflow.models import Gist
 
+# Notion API 限制：单段 rich_text 的 text.content 长度 ≤ 2000
+NOTION_RICH_TEXT_MAX = 2000
+
+
+def _truncate_for_notion(text: str, max_len: int = NOTION_RICH_TEXT_MAX) -> str:
+    """Ensure string length is within Notion rich_text limit (≤2000)."""
+    if not text:
+        return text
+    return text[:max_len]
+
 
 class NotionPublisher:
     """
@@ -188,7 +198,7 @@ class NotionPublisher:
                 "rich_text": [
                     {
                         "text": {
-                            "content": gist.summary[:2000] if gist.summary else ""
+                            "content": _truncate_for_notion(gist.summary or "")
                         }
                     }
                 ]
@@ -242,7 +252,7 @@ class NotionPublisher:
                 "object": "block",
                 "type": "callout",
                 "callout": {
-                    "rich_text": [{"type": "text", "text": {"content": insights_text[:2000]}}],
+                    "rich_text": [{"type": "text", "text": {"content": _truncate_for_notion(insights_text)}}],
                     "icon": {"emoji": "💡"},
                     "color": "blue_background",
                 }
@@ -273,8 +283,8 @@ class NotionPublisher:
                         "rich_text": [{
                             "type": "text",
                             "text": {
-                                "content": link[:2000],
-                                "link": {"url": link[:2000]} if link.startswith("http") else None,
+                                "content": _truncate_for_notion(link),
+                                "link": {"url": _truncate_for_notion(link)} if link.startswith("http") else None,
                             }
                         }]
                     }
@@ -327,7 +337,7 @@ class NotionPublisher:
             "paragraph": {
                 "rich_text": [{
                     "type": "text",
-                    "text": {"content": metadata},
+                    "text": {"content": _truncate_for_notion(metadata)},
                     "annotations": {"color": "gray", "italic": True},
                 }]
             }
@@ -335,13 +345,14 @@ class NotionPublisher:
 
         return blocks
 
-    def _split_content_to_blocks(self, content: str, max_length: int = 2000) -> list[dict]:
+    def _split_content_to_blocks(self, content: str, max_length: int = NOTION_RICH_TEXT_MAX) -> list[dict]:
         """
         Split long content into multiple paragraph blocks.
+        Notion requires rich_text content length ≤ 2000 per block.
 
         Args:
             content: The content to split.
-            max_length: Maximum characters per block.
+            max_length: Maximum characters per block (default 2000).
 
         Returns:
             List of paragraph block dictionaries.
@@ -353,23 +364,23 @@ class NotionPublisher:
 
         current_block = ""
         for para in paragraphs:
-            if len(current_block) + len(para) + 2 <= max_length:
-                current_block += ("\n\n" if current_block else "") + para
+            sep = "\n\n" if current_block else ""
+            if len(current_block) + len(sep) + len(para) <= max_length:
+                current_block += sep + para
             else:
-                # Save current block if not empty
+                # Flush current block (guaranteed ≤ max_length)
                 if current_block:
                     blocks.append(self._create_paragraph_block(current_block))
-                # Start new block
+                # Start new block: cap single paragraph to max_length so we never exceed
                 if len(para) <= max_length:
                     current_block = para
                 else:
-                    # Force split long paragraph
+                    # Force split long paragraph into chunks of at most max_length
                     for i in range(0, len(para), max_length):
-                        chunk = para[i:i + max_length]
+                        chunk = para[i : i + max_length]
                         blocks.append(self._create_paragraph_block(chunk))
                     current_block = ""
 
-        # Add remaining content
         if current_block:
             blocks.append(self._create_paragraph_block(current_block))
 
@@ -391,7 +402,7 @@ class NotionPublisher:
             "paragraph": {
                 "rich_text": [{
                     "type": "text",
-                    "text": {"content": text[:2000]}
+                    "text": {"content": _truncate_for_notion(text)}
                 }]
             }
         }

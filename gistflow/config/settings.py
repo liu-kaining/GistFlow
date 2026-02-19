@@ -139,6 +139,10 @@ class Settings(BaseSettings):
         default="markdown",
         description="Storage format: 'markdown' or 'json'",
     )
+    DATA_DIR: str = Field(
+        default="./data",
+        description="Directory for SQLite database and runtime data. In Docker set to /app/data so volume persists.",
+    )
 
     # System Configuration
     LOG_LEVEL: str = Field(

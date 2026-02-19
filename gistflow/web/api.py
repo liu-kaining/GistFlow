@@ -336,6 +336,25 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
             limit = int(request.args.get("limit", 50))
 
             history = local_store.get_prompt_history(prompt_type=prompt_type, limit=limit)
+            # Convert datetime objects to strings for JSON serialization
+            for item in history:
+                if "created_at" in item and item["created_at"]:
+                    created_at = item["created_at"]
+                    if hasattr(created_at, "isoformat"):
+                        item["created_at"] = created_at.isoformat()
+                    elif not isinstance(created_at, str):
+                        item["created_at"] = str(created_at)
+                # Ensure all values are JSON serializable
+                for key, value in list(item.items()):
+                    if value is None:
+                        item[key] = None
+                    elif isinstance(value, (int, float, str, bool)):
+                        pass  # Already serializable
+                    else:
+                        try:
+                            item[key] = str(value)
+                        except Exception:
+                            item[key] = None
             return jsonify({"history": history})
 
         except Exception as e:
@@ -406,21 +425,55 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
 
     @app.route("/api/tasks/status", methods=["GET"])
     def get_task_status() -> dict:
-        """Get task scheduler status."""
+        """Get task scheduler status and last run details."""
         try:
             pipeline = app.config.get("pipeline")
             if not pipeline:
                 return jsonify({"error": "Pipeline not available"}), 503
 
             scheduler = getattr(pipeline, "scheduler", None)
-            if scheduler and scheduler.running:
-                jobs = scheduler.get_jobs()
-                return jsonify({
-                    "running": True,
-                    "jobs": [{"id": job.id, "name": job.name, "next_run": str(job.next_run_time)} for job in jobs],
-                })
+            if scheduler:
+                if scheduler.running:
+                    try:
+                        jobs = scheduler.get_jobs()
+                        # APScheduler state: STATE_STOPPED=0, STATE_PAUSED=1, STATE_RUNNING=2
+                        scheduler_state = getattr(scheduler, "state", 0)
+                        is_paused = scheduler_state == 1  # STATE_PAUSED
+                        next_run_time = None
+                        if jobs and jobs[0].next_run_time:
+                            next_run_time = jobs[0].next_run_time.isoformat() if hasattr(jobs[0].next_run_time, 'isoformat') else str(jobs[0].next_run_time)
+                        status = {
+                            "running": True,
+                            "paused": is_paused,
+                            "next_run_time": next_run_time,
+                            "interval_minutes": getattr(pipeline, "settings", None) and getattr(pipeline.settings, "CHECK_INTERVAL_MINUTES", None) or None,
+                            "jobs": [{"id": job.id, "name": job.name, "next_run": str(job.next_run_time)} for job in jobs],
+                        }
+                    except Exception as e:
+                        logger.warning(f"Failed to get scheduler status: {e}")
+                        status = {"running": False, "paused": False, "next_run_time": None, "jobs": []}
+                else:
+                    # 调度器已初始化但未启动，仍返回间隔供前端展示
+                    status = {
+                        "running": False,
+                        "paused": False,
+                        "next_run_time": None,
+                        "interval_minutes": getattr(pipeline, "settings", None) and getattr(pipeline.settings, "CHECK_INTERVAL_MINUTES", None) or None,
+                        "jobs": [],
+                    }
             else:
-                return jsonify({"running": False, "jobs": []})
+                status = {
+                    "running": False,
+                    "paused": False,
+                    "next_run_time": None,
+                    "interval_minutes": getattr(pipeline, "settings", None) and getattr(pipeline.settings, "CHECK_INTERVAL_MINUTES", None) or None,
+                    "jobs": [],
+                }
+
+            last_run = getattr(pipeline, "_last_run", None)
+            if last_run is not None:
+                status["last_run"] = last_run
+            return jsonify(status)
 
         except Exception as e:
             logger.error(f"Failed to get task status: {e}")
@@ -434,13 +487,115 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
             if not pipeline:
                 return jsonify({"success": False, "error": "Pipeline not available"}), 503
 
-            # Run in a way that won't block the web server
-            # The run_once() method is synchronous but should complete reasonably quickly
-            stats = pipeline.run_once()
-            return jsonify({"success": True, "stats": stats})
+            # 检查是否已有任务在执行
+            is_running = getattr(pipeline, "_is_running", False)
+            last_run = getattr(pipeline, "_last_run", None)
+            
+            # 如果 _is_running 为 True，但 _last_run 显示任务已完成，说明状态不一致，强制重置
+            if is_running and last_run:
+                if not last_run.get("running") and last_run.get("finished_at"):
+                    logger.warning(f"Detected inconsistent state: _is_running=True but _last_run indicates finished. Resetting _is_running.")
+                    pipeline._is_running = False
+                    is_running = False
+            
+            if is_running:
+                return jsonify({
+                    "success": False,
+                    "error": "任务正在执行中，请等待当前任务完成后再试",
+                }), 409  # Conflict
+
+            # 在后台线程中异步执行，避免阻塞 Flask 请求
+            import threading
+            def run_in_background():
+                try:
+                    pipeline.run_once()
+                except Exception as e:
+                    logger.exception(f"Background task execution failed: {e}")
+                    # 确保即使异常也重置运行标志
+                    if hasattr(pipeline, "_is_running"):
+                        pipeline._is_running = False
+                    # 更新 _last_run 状态
+                    if hasattr(pipeline, "_last_run") and pipeline._last_run:
+                        pipeline._last_run["running"] = False
+                        if not pipeline._last_run.get("finished_at"):
+                            from datetime import datetime
+                            pipeline._last_run["finished_at"] = datetime.now().isoformat()
+                        pipeline._last_run["phase"] = "执行失败"
+
+            thread = threading.Thread(target=run_in_background, daemon=True)
+            thread.start()
+
+            return jsonify({
+                "success": True,
+                "message": "任务已启动，正在后台执行。请查看任务页的执行详情了解进度。",
+            })
 
         except Exception as e:
             logger.exception(f"Failed to run task: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/tasks/stop", methods=["POST"])
+    def stop_task() -> dict:
+        """Stop the scheduler (shutdown)."""
+        try:
+            pipeline = app.config.get("pipeline")
+            if not pipeline:
+                return jsonify({"success": False, "error": "Pipeline not available"}), 503
+
+            if pipeline.stop_scheduler():
+                return jsonify({"success": True, "message": "调度器已停止"})
+            return jsonify({"success": False, "error": "调度器未运行"}), 400
+
+        except Exception as e:
+            logger.exception(f"Failed to stop task: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/tasks/pause", methods=["POST"])
+    def pause_task() -> dict:
+        """Pause the scheduler (jobs won't run, but scheduler stays alive)."""
+        try:
+            pipeline = app.config.get("pipeline")
+            if not pipeline:
+                return jsonify({"success": False, "error": "Pipeline not available"}), 503
+
+            if pipeline.pause_scheduler():
+                return jsonify({"success": True, "message": "调度器已暂停"})
+            return jsonify({"success": False, "error": "调度器未运行或已暂停"}), 400
+
+        except Exception as e:
+            logger.exception(f"Failed to pause task: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/tasks/resume", methods=["POST"])
+    def resume_task() -> dict:
+        """Resume the scheduler (if paused)."""
+        try:
+            pipeline = app.config.get("pipeline")
+            if not pipeline:
+                return jsonify({"success": False, "error": "Pipeline not available"}), 503
+
+            if pipeline.resume_scheduler():
+                return jsonify({"success": True, "message": "调度器已恢复"})
+            return jsonify({"success": False, "error": "调度器未暂停或未运行"}), 400
+
+        except Exception as e:
+            logger.exception(f"Failed to resume task: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/tasks/start", methods=["POST"])
+    def start_task() -> dict:
+        """Start the scheduler (if not already running)."""
+        try:
+            pipeline = app.config.get("pipeline")
+            if not pipeline:
+                return jsonify({"success": False, "error": "Pipeline not available"}), 503
+
+            if pipeline.start_scheduler():
+                return jsonify({"success": True, "message": "调度器已启动，将按配置的间隔自动执行任务"})
+            return jsonify({"success": False, "error": "调度器已在运行"}), 400
+
+        except Exception as e:
+            logger.exception(f"Failed to start scheduler: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/api/tasks/history", methods=["GET"])
@@ -545,7 +700,7 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
 
     @app.route("/api/tasks/retry", methods=["POST"])
     def retry_task() -> dict:
-        """Retry a failed task."""
+        """Retry a failed task: unmark so it will be re-fetched and reprocessed on next run."""
         try:
             data = request.json
             if not data:
@@ -555,22 +710,82 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
             if not message_id:
                 return jsonify({"success": False, "error": "message_id required"}), 400
 
-            # TODO: Implement retry logic
-            # For now, just remove from error list and mark for reprocessing
             local_store = app.config.get("local_store")
-            if local_store:
-                conn = local_store._get_connection()
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM processing_errors WHERE message_id = ?", (message_id,))
-                conn.commit()
+            if not local_store:
+                return jsonify({"success": False, "error": "LocalStore not available"}), 503
 
+            if local_store.unmark_processed(message_id):
+                return jsonify({
+                    "success": True,
+                    "message": "已移除失败记录，下次运行将重新拉取并处理该邮件。",
+                })
             return jsonify({
-                "success": True,
-                "message": f"Task {message_id} marked for retry. It will be processed in the next run.",
-            })
+                "success": False,
+                "error": "未找到该 message_id 的失败记录",
+            }), 404
 
         except Exception as e:
             logger.error(f"Failed to retry task: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/tasks/reset", methods=["POST"])
+    def reset_task_state() -> dict:
+        """Force reset task running state (for recovery from stuck tasks)."""
+        try:
+            pipeline = app.config.get("pipeline")
+            if not pipeline:
+                return jsonify({"success": False, "error": "Pipeline not available"}), 503
+
+            was_running = getattr(pipeline, "_is_running", False)
+            pipeline._is_running = False
+            
+            # Also update _last_run if it's stuck
+            last_run = getattr(pipeline, "_last_run", None)
+            if last_run and last_run.get("running"):
+                if not last_run.get("finished_at"):
+                    from datetime import datetime
+                    last_run["finished_at"] = datetime.now().isoformat()
+                last_run["running"] = False
+                last_run["phase"] = "已强制重置"
+            
+            logger.warning(f"Task state forcefully reset (was_running={was_running})")
+            return jsonify({
+                "success": True,
+                "message": "任务状态已重置，现在可以重新启动任务了",
+            })
+
+        except Exception as e:
+            logger.error(f"Failed to reset task state: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/tasks/reprocess", methods=["POST"])
+    def reprocess_task() -> dict:
+        """Remove a task from processed_emails so it will be re-fetched and reprocessed in the next run."""
+        try:
+            data = request.json
+            if not data:
+                return jsonify({"success": False, "error": "No data provided"}), 400
+
+            message_id = data.get("message_id")
+            if not message_id:
+                return jsonify({"success": False, "error": "message_id required"}), 400
+
+            local_store = app.config.get("local_store")
+            if not local_store:
+                return jsonify({"success": False, "error": "LocalStore not available"}), 503
+
+            if local_store.unmark_processed(message_id):
+                return jsonify({
+                    "success": True,
+                    "message": "已移除处理记录，下次运行将重新拉取并处理该邮件。",
+                })
+            return jsonify({
+                "success": False,
+                "error": "未找到该 message_id 的处理记录",
+            }), 404
+
+        except Exception as e:
+            logger.error(f"Failed to reprocess task: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/api/stats", methods=["GET"])

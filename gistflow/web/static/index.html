@@ -297,11 +297,30 @@
                 </div>
             </div>
 
+            <div class="glass-card rounded-lg p-5 mb-4">
+                <h3 class="text-lg font-semibold text-gray-800 mb-4">调度器状态</h3>
+                <div id="scheduler-status-info" class="mb-4 text-sm text-gray-600">
+                    <p>加载中...</p>
+                </div>
+            </div>
+
             <div class="glass-card rounded-lg p-5">
                 <h3 class="text-lg font-semibold text-gray-800 mb-4">快速操作</h3>
-                <div class="flex space-x-3">
+                <div class="flex flex-wrap gap-3">
                     <button onclick="runTask()" class="btn-primary text-white px-5 py-2 rounded-lg font-medium text-sm">
                         手动执行
+                    </button>
+                    <button id="start-scheduler-btn" onclick="startScheduler()" class="bg-green-600 text-white px-5 py-2 rounded-lg font-medium text-sm hover:bg-green-700 transition hidden">
+                        启动调度
+                    </button>
+                    <button id="pause-task-btn" onclick="pauseTask()" class="bg-yellow-600 text-white px-5 py-2 rounded-lg font-medium text-sm hover:bg-yellow-700 transition hidden">
+                        暂停调度
+                    </button>
+                    <button id="resume-task-btn" onclick="resumeTask()" class="bg-green-600 text-white px-5 py-2 rounded-lg font-medium text-sm hover:bg-green-700 transition hidden">
+                        恢复调度
+                    </button>
+                    <button onclick="stopTask()" class="bg-red-600 text-white px-5 py-2 rounded-lg font-medium text-sm hover:bg-red-700 transition">
+                        停止调度
                     </button>
                     <button onclick="loadStats()" class="bg-gray-100 text-gray-700 px-5 py-2 rounded-lg font-medium text-sm hover:bg-gray-200 transition">
                         刷新统计
@@ -395,6 +414,18 @@
 
         <!-- Tasks Page -->
         <div id="tasks" class="page hidden">
+            <div class="glass-card rounded-lg p-5 mb-4">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-lg font-semibold text-gray-800">执行详情</h2>
+                    <button onclick="loadLastRun()" class="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 text-sm font-medium transition">
+                        刷新
+                    </button>
+                </div>
+                <div id="last-run-detail" class="text-sm">
+                    <p class="text-gray-500">加载中...</p>
+                </div>
+            </div>
+
             <div class="glass-card rounded-lg p-5 mb-4">
                 <div class="flex justify-between items-center mb-4">
                     <h2 class="text-lg font-semibold text-gray-800">任务历史</h2>
@@ -500,6 +531,7 @@
             } else if (page === 'config') {
                 loadConfig();
             } else if (page === 'tasks') {
+                loadLastRun();
                 loadTaskHistory();
                 loadFailedTasks();
             } else if (page === 'prompts') {
@@ -527,21 +559,217 @@
             }
         }
 
+        let lastRunPollTimer = null;
+
+        async function loadLastRun() {
+            const el = document.getElementById('last-run-detail');
+            if (!el) return;
+            try {
+                const res = await fetch(`${API_BASE}/tasks/status`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                const lastRun = data.last_run;
+                if (!lastRun) {
+                    el.innerHTML = '<p class="text-gray-500">暂无执行记录，手动执行一次任务后这里会显示本次执行过程数据。</p>';
+                    return;
+                }
+                const stats = lastRun.stats || {};
+                const startedAt = lastRun.started_at ? formatTime(lastRun.started_at) : '-';
+                // 如果调度器已停止，即使 lastRun.running=true，那次执行实际上也结束了（被中断）
+                const isActuallyRunning = lastRun.running && data.running;
+                let finishedAt;
+                if (lastRun.finished_at) {
+                    finishedAt = formatTime(lastRun.finished_at);
+                } else if (isActuallyRunning) {
+                    finishedAt = '执行中...';
+                } else {
+                    // 已完成但没有 finished_at（可能是旧数据或异常情况）
+                    finishedAt = '-';
+                }
+                let statusText;
+                if (isActuallyRunning) {
+                    statusText = '<span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs font-medium">执行中</span>';
+                } else if (lastRun.running && !data.running) {
+                    // 执行被中断（调度器停止）
+                    statusText = '<span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs font-medium">已中断</span>';
+                } else {
+                    statusText = '<span class="px-2 py-1 bg-green-100 text-green-800 rounded text-xs font-medium">已完成</span>';
+                }
+                const phaseHint = (isActuallyRunning && lastRun.phase) ? `<p class="text-sm text-gray-500 mt-1">${escapeHtml(lastRun.phase)}</p>` : '';
+                el.innerHTML = `
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                        <div><span class="text-gray-500">状态</span><br/><span class="font-medium">${statusText}</span>${phaseHint}</div>
+                        <div><span class="text-gray-500">开始时间</span><br/><span class="font-medium">${startedAt}</span></div>
+                        <div><span class="text-gray-500">结束时间</span><br/><span class="font-medium">${finishedAt}</span></div>
+                    </div>
+                    <div class="border-t border-gray-200 pt-4">
+                        <h4 class="text-gray-700 font-medium mb-2">核心数据</h4>
+                        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                            <div class="bg-gray-50 rounded-lg px-3 py-2"><span class="text-gray-500 text-xs block">发现邮件</span><span class="font-semibold text-gray-900">${stats.emails_found ?? '-'}</span></div>
+                            <div class="bg-gray-50 rounded-lg px-3 py-2"><span class="text-gray-500 text-xs block">已处理</span><span class="font-semibold text-gray-900">${stats.emails_processed ?? '-'}</span></div>
+                            <div class="bg-gray-50 rounded-lg px-3 py-2"><span class="text-gray-500 text-xs block">跳过</span><span class="font-semibold text-gray-900">${stats.emails_skipped ?? '-'}</span></div>
+                            <div class="bg-gray-50 rounded-lg px-3 py-2"><span class="text-gray-500 text-xs block">Gist 创建</span><span class="font-semibold text-gray-900">${stats.gists_created ?? '-'}</span></div>
+                            <div class="bg-gray-50 rounded-lg px-3 py-2"><span class="text-gray-500 text-xs block">Notion 发布</span><span class="font-semibold text-gray-900">${stats.notion_published ?? '-'}</span></div>
+                            <div class="bg-gray-50 rounded-lg px-3 py-2"><span class="text-gray-500 text-xs block">本地保存</span><span class="font-semibold text-gray-900">${stats.local_saved ?? '-'}</span></div>
+                            <div class="bg-gray-50 rounded-lg px-3 py-2"><span class="text-gray-500 text-xs block">错误数</span><span class="font-semibold ${(stats.errors || 0) > 0 ? 'text-red-600' : 'text-gray-900'}">${stats.errors ?? '-'}</span></div>
+                        </div>
+                    </div>
+                `;
+                // 只要本次执行还在进行中就轮询（包括手动执行，此时调度器可能未启动）
+                if (lastRun.running) {
+                    if (lastRunPollTimer) clearTimeout(lastRunPollTimer);
+                    lastRunPollTimer = setTimeout(loadLastRun, 2000);
+                } else {
+                    if (lastRunPollTimer) { clearTimeout(lastRunPollTimer); lastRunPollTimer = null; }
+                }
+            } catch (e) {
+                console.error('Failed to load last run:', e);
+                el.innerHTML = '<p class="text-red-600">加载执行详情失败: ' + (e.message || '未知错误') + '</p>';
+            }
+        }
+
+        function formatTime(iso) {
+            if (!iso) return '-';
+            try {
+                const d = new Date(iso);
+                return isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN');
+            } catch (_) { return iso; }
+        }
+
         async function loadTaskStatus() {
             try {
                 const res = await fetch(`${API_BASE}/tasks/status`);
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const data = await res.json();
                 const statusEl = document.getElementById('task-status');
+                const pauseBtn = document.getElementById('pause-task-btn');
+                const resumeBtn = document.getElementById('resume-task-btn');
+                const startBtn = document.getElementById('start-scheduler-btn');
+                const schedulerInfoEl = document.getElementById('scheduler-status-info');
+                
                 if (data.running) {
-                    statusEl.innerHTML = '<span class="status-badge status-running">运行中</span>';
+                    if (data.paused) {
+                        statusEl.innerHTML = '<span class="status-badge" style="background-color: #fbbf24; color: #78350f;">已暂停</span>';
+                        if (pauseBtn) pauseBtn.classList.add('hidden');
+                        if (resumeBtn) resumeBtn.classList.remove('hidden');
+                        if (startBtn) startBtn.classList.add('hidden');
+                        if (schedulerInfoEl) {
+                            const nextRun = data.next_run_time ? formatTime(data.next_run_time) : '已暂停';
+                            schedulerInfoEl.innerHTML = `<p>状态：<span class="font-medium text-yellow-600">已暂停</span></p><p>间隔：${data.interval_minutes || '-'} 分钟</p><p>下次执行：${nextRun}</p>`;
+                        }
+                    } else {
+                        statusEl.innerHTML = '<span class="status-badge status-running">运行中</span>';
+                        if (pauseBtn) pauseBtn.classList.remove('hidden');
+                        if (resumeBtn) resumeBtn.classList.add('hidden');
+                        if (startBtn) startBtn.classList.add('hidden');
+                        if (schedulerInfoEl) {
+                            const nextRun = data.next_run_time ? formatTime(data.next_run_time) : '计算中...';
+                            schedulerInfoEl.innerHTML = `<p>状态：<span class="font-medium text-green-600">运行中</span></p><p>间隔：${data.interval_minutes || '-'} 分钟</p><p>下次执行：${nextRun}</p>`;
+                        }
+                    }
                 } else {
                     statusEl.innerHTML = '<span class="status-badge status-stopped">已停止</span>';
+                    if (pauseBtn) pauseBtn.classList.add('hidden');
+                    if (resumeBtn) resumeBtn.classList.add('hidden');
+                    if (startBtn) startBtn.classList.remove('hidden');
+                    if (schedulerInfoEl) {
+                        schedulerInfoEl.innerHTML = `<p>状态：<span class="font-medium text-gray-600">未启动</span></p><p>间隔：${data.interval_minutes || '-'} 分钟</p><p>下次执行：-</p>`;
+                    }
                 }
             } catch (e) {
                 console.error('Failed to load task status:', e);
-                document.getElementById('task-status').textContent = '加载失败';
+                const statusEl = document.getElementById('task-status');
+                const pauseBtn = document.getElementById('pause-task-btn');
+                const resumeBtn = document.getElementById('resume-task-btn');
+                const startBtn = document.getElementById('start-scheduler-btn');
+                if (statusEl) statusEl.textContent = '加载失败';
+                // Hide buttons on error to avoid confusion
+                if (pauseBtn) pauseBtn.classList.add('hidden');
+                if (resumeBtn) resumeBtn.classList.add('hidden');
+                if (startBtn) startBtn.classList.add('hidden');
             }
+        }
+
+        async function startScheduler() {
+            showConfirm('启动调度', `确定要启动定时任务调度吗？将每 ${document.getElementById('scheduler-status-info')?.textContent.match(/间隔：(\d+)/)?.[1] || '?'} 分钟自动执行一次。`, '启动', async () => {
+                try {
+                    const res = await fetch(`${API_BASE}/tasks/start`, {method: 'POST'});
+                    if (!res.ok) {
+                        const errorData = await res.json().catch(() => ({}));
+                        throw new Error(errorData.error || `HTTP ${res.status}`);
+                    }
+                    const data = await res.json();
+                    if (data.success) {
+                        showToast('调度器已启动', 'success');
+                        loadTaskStatus();
+                    } else {
+                        showToast('启动失败: ' + (data.error || '未知错误'), 'error');
+                    }
+                } catch (e) {
+                    showToast('启动失败: ' + (e.message || '未知错误'), 'error');
+                }
+            });
+        }
+
+        async function pauseTask() {
+            showConfirm('暂停调度', '确定要暂停定时任务调度吗？暂停后不会自动处理邮件，但可以手动执行。', '暂停', async () => {
+                try {
+                    const res = await fetch(`${API_BASE}/tasks/pause`, {method: 'POST'});
+                    if (!res.ok) {
+                        const errorData = await res.json().catch(() => ({}));
+                        throw new Error(errorData.error || `HTTP ${res.status}`);
+                    }
+                    const data = await res.json();
+                    if (data.success) {
+                        showToast('调度器已暂停', 'success');
+                        loadTaskStatus();
+                    } else {
+                        showToast('暂停失败: ' + (data.error || '未知错误'), 'error');
+                    }
+                } catch (e) {
+                    showToast('暂停失败: ' + (e.message || '未知错误'), 'error');
+                }
+            });
+        }
+
+        async function resumeTask() {
+            try {
+                const res = await fetch(`${API_BASE}/tasks/resume`, {method: 'POST'});
+                if (!res.ok) {
+                    const errorData = await res.json().catch(() => ({}));
+                    throw new Error(errorData.error || `HTTP ${res.status}`);
+                }
+                const data = await res.json();
+                if (data.success) {
+                    showToast('调度器已恢复', 'success');
+                    loadTaskStatus();
+                } else {
+                    showToast('恢复失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch (e) {
+                showToast('恢复失败: ' + (e.message || '未知错误'), 'error');
+            }
+        }
+
+        async function stopTask() {
+            showConfirm('停止调度', '确定要停止定时任务调度吗？停止后需要重启容器才能恢复。', '停止', async () => {
+                try {
+                    const res = await fetch(`${API_BASE}/tasks/stop`, {method: 'POST'});
+                    if (!res.ok) {
+                        const errorData = await res.json().catch(() => ({}));
+                        throw new Error(errorData.error || `HTTP ${res.status}`);
+                    }
+                    const data = await res.json();
+                    if (data.success) {
+                        showToast('调度器已停止', 'success');
+                        loadTaskStatus();
+                    } else {
+                        showToast('停止失败: ' + (data.error || '未知错误'), 'error');
+                    }
+                } catch (e) {
+                    showToast('停止失败: ' + (e.message || '未知错误'), 'error');
+                }
+            });
         }
 
         async function loadPrompts() {
@@ -637,16 +865,48 @@
         async function executeRunTask() {
             try {
                 const res = await fetch(`${API_BASE}/tasks/run`, {method: 'POST'});
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                if (!res.ok) {
+                    if (res.status === 409) {
+                        // 任务正在执行中，提供重置选项
+                        const data = await res.json().catch(() => ({}));
+                        showConfirm('任务正在执行', '检测到任务可能正在执行中。如果任务已卡住，可以强制重置状态。', '强制重置', async () => {
+                            await resetTaskState();
+                        });
+                        return;
+                    }
+                    throw new Error(`HTTP ${res.status}`);
+                }
                 const data = await res.json();
                 if (data.success) {
-                    showToast('任务已启动，请查看日志', 'success');
-                    setTimeout(() => loadStats(), 2000);
+                    showToast(data.message || '任务已启动，正在后台执行', 'success');
+                    loadTaskStatus();
+                    loadLastRun();
+                    // loadLastRun 内部会按 lastRun.running 决定是否 2s 后再轮询，此处无需 setInterval
                 } else {
                     showToast('启动失败: ' + (data.error || '未知错误'), 'error');
                 }
             } catch (e) {
                 showToast('启动任务失败: ' + e.message, 'error');
+            }
+        }
+
+        async function resetTaskState() {
+            try {
+                const res = await fetch(`${API_BASE}/tasks/reset`, {method: 'POST'});
+                if (!res.ok) {
+                    const errorData = await res.json().catch(() => ({}));
+                    throw new Error(errorData.error || `HTTP ${res.status}`);
+                }
+                const data = await res.json();
+                if (data.success) {
+                    showToast('任务状态已重置', 'success');
+                    loadTaskStatus();
+                    loadLastRun();
+                } else {
+                    showToast('重置失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch (e) {
+                showToast('重置任务状态失败: ' + e.message, 'error');
             }
         }
 
@@ -836,6 +1096,7 @@
                                 <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">评分</th>
                                 <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">处理时间</th>
                                 <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">状态</th>
+                                <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">操作</th>
                             </tr>
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
@@ -850,6 +1111,9 @@
                                     <td class="px-4 py-3 text-sm text-gray-600">${processedAt}</td>
                                     <td class="px-4 py-3 text-sm">
                                         ${h.is_spam ? '<span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded-full text-xs font-medium">垃圾</span>' : '<span class="px-2 py-1 bg-green-100 text-green-800 rounded-full text-xs font-medium">正常</span>'}
+                                    </td>
+                                    <td class="px-4 py-3 text-sm">
+                                        <button type="button" data-message-id="${escapeHtml(h.message_id || '')}" onclick="reprocessTask(this.dataset.messageId)" class="text-blue-600 hover:text-blue-800 text-xs font-medium transition" title="下次运行将重新拉取并处理">重新处理</button>
                                     </td>
                                 </tr>
                             `;
@@ -932,6 +1196,35 @@
             showConfirm('重试任务', '确定要重试这个任务吗？', '重试', () => {
                 executeRetryTask(messageId);
             });
+        }
+
+        function reprocessTask(messageId) {
+            if (!messageId) {
+                showToast('无法重新处理：缺少 message_id', 'error');
+                return;
+            }
+            showConfirm('重新处理', '将从处理记录中移除该条，下次定时运行时会重新拉取并处理该邮件。确定继续？', '确定', () => {
+                executeReprocessTask(messageId);
+            });
+        }
+
+        async function executeReprocessTask(messageId) {
+            try {
+                const res = await fetch(`${API_BASE}/tasks/reprocess`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({message_id: messageId}),
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast('已标记重新处理', 'success');
+                    loadTaskHistory();
+                } else {
+                    showToast('操作失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch (e) {
+                showToast('请求失败: ' + e.message, 'error');
+            }
         }
         
         async function executeRetryTask(messageId) {
