@@ -269,6 +269,9 @@ class GistFlowPipeline:
                             self._last_run["stats"] = dict(stats)
                         if self._shutdown_requested:
                             logger.info("Shutdown requested, stopping processing")
+                            # 更新 phase 为已中断
+                            if self._last_run and self._last_run.get("running"):
+                                self._last_run["phase"] = "已中断"
                             break
 
                         try:
@@ -334,7 +337,14 @@ class GistFlowPipeline:
                 self._last_run["running"] = False
                 self._last_run["finished_at"] = stats["finished_at"]
                 self._last_run["stats"] = stats
-                self._last_run["phase"] = "已完成"
+                # 根据错误情况和 shutdown 状态设置不同的 phase
+                if self._shutdown_requested and self._last_run.get("phase") != "已中断":
+                    # 如果是因为 shutdown 中断的，确保 phase 是已中断
+                    self._last_run["phase"] = "已中断"
+                elif stats.get("errors", 0) > 0:
+                    self._last_run["phase"] = "已完成（有错误）"
+                else:
+                    self._last_run["phase"] = "已完成"
 
             # Log summary
             logger.info("=" * 60)

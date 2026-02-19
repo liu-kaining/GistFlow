@@ -514,13 +514,34 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
                     # 确保即使异常也重置运行标志
                     if hasattr(pipeline, "_is_running"):
                         pipeline._is_running = False
-                    # 更新 _last_run 状态
-                    if hasattr(pipeline, "_last_run") and pipeline._last_run:
+                    # 更新 _last_run 状态，如果不存在则创建
+                    from datetime import datetime
+                    if not hasattr(pipeline, "_last_run") or not pipeline._last_run:
+                        # 如果 _last_run 不存在，创建一个基本的记录
+                        pipeline._last_run = {
+                            "started_at": datetime.now().isoformat(),
+                            "running": False,
+                            "finished_at": datetime.now().isoformat(),
+                            "stats": {
+                                "emails_found": 0,
+                                "emails_processed": 0,
+                                "emails_skipped": 0,
+                                "gists_created": 0,
+                                "notion_published": 0,
+                                "local_saved": 0,
+                                "errors": 1,
+                            },
+                            "phase": "执行失败",
+                        }
+                    else:
+                        # 更新现有的 _last_run
                         pipeline._last_run["running"] = False
                         if not pipeline._last_run.get("finished_at"):
-                            from datetime import datetime
                             pipeline._last_run["finished_at"] = datetime.now().isoformat()
                         pipeline._last_run["phase"] = "执行失败"
+                        # 确保 stats 中有错误计数
+                        if pipeline._last_run.get("stats"):
+                            pipeline._last_run["stats"]["errors"] = pipeline._last_run["stats"].get("errors", 0) + 1
 
             thread = threading.Thread(target=run_in_background, daemon=True)
             thread.start()

@@ -575,8 +575,8 @@
                 }
                 const stats = lastRun.stats || {};
                 const startedAt = lastRun.started_at ? formatTime(lastRun.started_at) : '-';
-                // 如果调度器已停止，即使 lastRun.running=true，那次执行实际上也结束了（被中断）
-                const isActuallyRunning = lastRun.running && data.running;
+                // 判断任务是否正在执行：只要 lastRun.running = true，无论调度器是否运行，任务都在执行
+                const isActuallyRunning = lastRun.running === true;
                 let finishedAt;
                 if (lastRun.finished_at) {
                     finishedAt = formatTime(lastRun.finished_at);
@@ -587,15 +587,20 @@
                     finishedAt = '-';
                 }
                 let statusText;
-                if (isActuallyRunning) {
-                    statusText = '<span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs font-medium">执行中</span>';
-                } else if (lastRun.running && !data.running) {
-                    // 执行被中断（调度器停止）
+                // 优先检查 phase 字段来判断状态
+                if (lastRun.phase === "已中断") {
                     statusText = '<span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs font-medium">已中断</span>';
+                } else if (lastRun.phase === "执行失败") {
+                    statusText = '<span class="px-2 py-1 bg-red-100 text-red-800 rounded text-xs font-medium">执行失败</span>';
+                } else if (isActuallyRunning) {
+                    // 任务正在执行中
+                    statusText = '<span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs font-medium">执行中</span>';
                 } else {
+                    // 任务已完成（lastRun.running = false 且 finished_at 有值，或 phase = "已完成"）
                     statusText = '<span class="px-2 py-1 bg-green-100 text-green-800 rounded text-xs font-medium">已完成</span>';
                 }
-                const phaseHint = (isActuallyRunning && lastRun.phase) ? `<p class="text-sm text-gray-500 mt-1">${escapeHtml(lastRun.phase)}</p>` : '';
+                // 显示 phase 信息：执行中时显示进度，已中断时显示"已中断"，已完成时显示"已完成"
+                const phaseHint = (lastRun.phase && isActuallyRunning) ? `<p class="text-sm text-gray-500 mt-1">${escapeHtml(lastRun.phase)}</p>` : '';
                 el.innerHTML = `
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                         <div><span class="text-gray-500">状态</span><br/><span class="font-medium">${statusText}</span>${phaseHint}</div>
