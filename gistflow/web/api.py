@@ -925,6 +925,48 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
                 "error": str(e)
             }), 200  # Return 200 with error message instead of 500
 
+    @app.route("/api/data/clear", methods=["POST"])
+    def clear_all_data() -> dict:
+        """Clear all data: database records and local files."""
+        try:
+            local_store = app.config.get("local_store")
+            pipeline = app.config.get("pipeline")
+            
+            if not local_store:
+                return jsonify({"success": False, "error": "LocalStore not available"}), 503
+            
+            # Clear database
+            db_result = local_store.clear_all_data()
+            
+            # Clear local files
+            file_result = {"files_deleted": 0, "message": "Local storage disabled"}
+            if pipeline and hasattr(pipeline, "local_publisher") and pipeline.local_publisher:
+                try:
+                    file_result = pipeline.local_publisher.clear_all_files()
+                except Exception as e:
+                    logger.error(f"Failed to clear local files: {e}")
+                    file_result = {"files_deleted": 0, "error": str(e)}
+            
+            # Reset pipeline state
+            if pipeline:
+                if hasattr(pipeline, "_last_run"):
+                    pipeline._last_run = None
+                if hasattr(pipeline, "_is_running"):
+                    pipeline._is_running = False
+            
+            logger.warning("All data cleared by user request")
+            
+            return jsonify({
+                "success": True,
+                "message": "所有数据已清除",
+                "database": db_result,
+                "files": file_result,
+            })
+            
+        except Exception as e:
+            logger.exception(f"Failed to clear data: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
     @app.route("/", methods=["GET"])
     def index() -> str:
         """Serve web UI."""

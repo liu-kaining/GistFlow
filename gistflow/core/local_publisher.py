@@ -235,6 +235,38 @@ class LocalPublisher:
 
         return file_path
 
+    def clear_all_files(self) -> dict:
+        """
+        Delete all files in the storage directory.
+        This is a destructive operation and cannot be undone.
+
+        Returns:
+            Dictionary with count of deleted files.
+        """
+        if not self.enabled:
+            return {"files_deleted": 0, "message": "Local storage is disabled"}
+        
+        if not self.storage_path.exists():
+            return {"files_deleted": 0, "message": "Storage directory does not exist"}
+        
+        deleted_count = 0
+        try:
+            # Delete all files in the storage directory
+            for file_path in self.storage_path.iterdir():
+                if file_path.is_file():
+                    file_path.unlink()
+                    deleted_count += 1
+            
+            logger.warning(f"Deleted {deleted_count} files from {self.storage_path}")
+            
+            return {
+                "files_deleted": deleted_count,
+                "storage_path": str(self.storage_path),
+            }
+        except OSError as e:
+            logger.error(f"Failed to clear local files: {e}")
+            raise
+
     def _build_json_content(self, gist: Gist) -> dict:
         """
         Build JSON-compatible dictionary from Gist.

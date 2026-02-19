@@ -325,6 +325,9 @@
                     <button onclick="loadStats()" class="bg-gray-100 text-gray-700 px-5 py-2 rounded-lg font-medium text-sm hover:bg-gray-200 transition">
                         刷新统计
                     </button>
+                    <button onclick="clearAllData()" class="bg-red-600 text-white px-5 py-2 rounded-lg font-medium text-sm hover:bg-red-700 transition">
+                        清除所有数据
+                    </button>
                 </div>
             </div>
         </div>
@@ -842,6 +845,42 @@
                     showToast('停止失败: ' + (e.message || '未知错误'), 'error');
                 }
             });
+        }
+
+        async function clearAllData() {
+            showConfirm(
+                '清除所有数据',
+                '⚠️ 警告：此操作将永久删除所有数据，包括：\n\n' +
+                '• 数据库中的所有记录（已处理邮件、错误记录、Prompt历史）\n' +
+                '• 本地存储的所有文件（Markdown/JSON文件）\n\n' +
+                '此操作不可恢复！确定要继续吗？',
+                '确认清除',
+                async () => {
+                    try {
+                        const res = await fetch(`${API_BASE}/data/clear`, {method: 'POST'});
+                        if (!res.ok) {
+                            const errorData = await res.json().catch(() => ({}));
+                            throw new Error(errorData.error || `HTTP ${res.status}`);
+                        }
+                        const data = await res.json();
+                        if (data.success) {
+                            const dbInfo = data.database || {};
+                            const fileInfo = data.files || {};
+                            const message = `数据已清除：数据库 ${dbInfo.processed_emails_deleted || 0} 条记录，本地文件 ${fileInfo.files_deleted || 0} 个`;
+                            showToast(message, 'success');
+                            // Refresh stats and task status
+                            loadStats();
+                            loadTaskStatus();
+                            loadTaskHistory();
+                            loadFailedTasks();
+                        } else {
+                            showToast('清除失败: ' + (data.error || '未知错误'), 'error');
+                        }
+                    } catch (e) {
+                        showToast('清除失败: ' + (e.message || '未知错误'), 'error');
+                    }
+                }
+            );
         }
 
         async function loadPrompts() {

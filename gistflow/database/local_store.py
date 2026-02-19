@@ -234,6 +234,71 @@ class LocalStore:
         except sqlite3.Error as e:
             logger.error(f"Failed to record error: {e}")
 
+    def clear_all_data(self) -> dict:
+        """
+        Clear all data from database (processed_emails, processing_errors, prompt_history).
+        This is a destructive operation and cannot be undone.
+
+        Returns:
+            Dictionary with counts of deleted records.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Get counts before deletion for reporting (handle missing tables gracefully)
+            processed_count = 0
+            errors_count = 0
+            prompt_history_count = 0
+            
+            try:
+                cursor.execute("SELECT COUNT(*) FROM processed_emails")
+                processed_count = cursor.fetchone()[0]
+            except sqlite3.OperationalError:
+                logger.debug("processed_emails table does not exist")
+            
+            try:
+                cursor.execute("SELECT COUNT(*) FROM processing_errors")
+                errors_count = cursor.fetchone()[0]
+            except sqlite3.OperationalError:
+                logger.debug("processing_errors table does not exist")
+            
+            try:
+                cursor.execute("SELECT COUNT(*) FROM prompt_history")
+                prompt_history_count = cursor.fetchone()[0]
+            except sqlite3.OperationalError:
+                logger.debug("prompt_history table does not exist")
+            
+            # Delete all records (ignore errors if tables don't exist)
+            try:
+                cursor.execute("DELETE FROM processed_emails")
+            except sqlite3.OperationalError:
+                pass
+            
+            try:
+                cursor.execute("DELETE FROM processing_errors")
+            except sqlite3.OperationalError:
+                pass
+            
+            try:
+                cursor.execute("DELETE FROM prompt_history")
+            except sqlite3.OperationalError:
+                pass
+            
+            conn.commit()
+            
+            logger.warning(f"Cleared all data: {processed_count} processed emails, {errors_count} errors, {prompt_history_count} prompt history records")
+            
+            return {
+                "processed_emails_deleted": processed_count,
+                "errors_deleted": errors_count,
+                "prompt_history_deleted": prompt_history_count,
+            }
+        except sqlite3.Error as e:
+            logger.error(f"Failed to clear all data: {e}")
+            conn.rollback()
+            raise
+
     def get_stats(self) -> dict:
         """
         Get processing statistics.
