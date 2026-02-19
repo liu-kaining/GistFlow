@@ -399,7 +399,30 @@ class GistFlowPipeline:
             def run_server():
                 try:
                     logger.info(f"Starting web server on {host}:{port}")
-                    app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+                    # Use custom request handler for Beijing timezone in access logs
+                    from werkzeug.serving import WSGIRequestHandler
+                    from datetime import datetime, timezone, timedelta
+                    
+                    # Custom request handler that uses Beijing timezone
+                    class BeijingTimeRequestHandler(WSGIRequestHandler):
+                        """Custom WSGI request handler that logs in Beijing timezone (UTC+8)"""
+                        tz_beijing = timezone(timedelta(hours=8))
+                        
+                        def log_date_time_string(self):
+                            """Return the current time formatted for logging in Beijing timezone"""
+                            now = datetime.now(self.tz_beijing)
+                            return now.strftime('[%d/%b/%Y %H:%M:%S]')
+                    
+                    # Run Flask with custom request handler
+                    from werkzeug.serving import make_server
+                    server = make_server(
+                        host, 
+                        port, 
+                        app, 
+                        request_handler=BeijingTimeRequestHandler,
+                        threaded=True
+                    )
+                    server.serve_forever()
                 except Exception as e:
                     logger.exception(f"Web server error: {e}")
                     raise

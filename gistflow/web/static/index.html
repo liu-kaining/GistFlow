@@ -690,11 +690,10 @@
         function formatTime(iso) {
             if (!iso) return '-';
             try {
-                const d = new Date(iso);
+                const d = typeof iso === 'string' ? new Date(iso) : new Date(iso);
                 if (isNaN(d.getTime())) return iso;
-                // 转换为东八区时间（UTC+8）
-                // 使用 Asia/Shanghai 时区
-                return d.toLocaleString('zh-CN', {
+                // 转换为东八区时间（UTC+8）使用 Intl.DateTimeFormat 确保正确转换
+                const formatter = new Intl.DateTimeFormat('zh-CN', {
                     timeZone: 'Asia/Shanghai',
                     year: 'numeric',
                     month: '2-digit',
@@ -704,6 +703,14 @@
                     second: '2-digit',
                     hour12: false
                 });
+                const parts = formatter.formatToParts(d);
+                const year = parts.find(p => p.type === 'year')?.value || '';
+                const month = parts.find(p => p.type === 'month')?.value || '';
+                const day = parts.find(p => p.type === 'day')?.value || '';
+                const hour = parts.find(p => p.type === 'hour')?.value || '';
+                const minute = parts.find(p => p.type === 'minute')?.value || '';
+                const second = parts.find(p => p.type === 'second')?.value || '';
+                return `${year}/${month}/${day} ${hour}:${minute}:${second}`;
             } catch (_) { return iso; }
         }
 
@@ -1334,26 +1341,8 @@
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
                             ${history.map((h, index) => {
-                                let processedAt = '-';
-                                if (h.processed_at) {
-                                    try {
-                                        const d = typeof h.processed_at === 'string' ? new Date(h.processed_at) : new Date(h.processed_at);
-                                        if (!isNaN(d.getTime())) {
-                                            processedAt = d.toLocaleString('zh-CN', {
-                                                timeZone: 'Asia/Shanghai',
-                                                year: 'numeric',
-                                                month: '2-digit',
-                                                day: '2-digit',
-                                                hour: '2-digit',
-                                                minute: '2-digit',
-                                                second: '2-digit',
-                                                hour12: false
-                                            });
-                                        }
-                                    } catch (e) {
-                                        processedAt = typeof h.processed_at === 'string' ? h.processed_at : '-';
-                                    }
-                                }
+                                // Use formatTime function for consistent timezone handling
+                                const processedAt = formatTime(h.processed_at);
                                 const score = h.score !== null && h.score !== undefined ? h.score : '-';
                                 const rowClass = index % 2 === 0 ? 'bg-white' : 'bg-gray-50';
                                 return `
@@ -1367,19 +1356,19 @@
                                             'bg-gray-100 text-gray-800'
                                         }">${score}</span>
                                     </td>
-                                    <td class="px-6 py-4 text-sm text-gray-600">${processedAt}</td>
-                                    <td class="px-6 py-4 text-sm">
+                                    <td class="px-6 py-4 text-sm text-gray-600 whitespace-nowrap">${processedAt}</td>
+                                    <td class="px-6 py-4 text-sm whitespace-nowrap">
                                         ${h.is_spam ? 
-                                            '<span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800"><span class="w-1.5 h-1.5 mr-1.5 bg-yellow-400 rounded-full"></span>垃圾</span>' : 
-                                            '<span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800"><span class="w-1.5 h-1.5 mr-1.5 bg-green-400 rounded-full"></span>正常</span>'
+                                            '<span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800 whitespace-nowrap"><span class="w-1.5 h-1.5 mr-1.5 bg-yellow-400 rounded-full flex-shrink-0"></span>垃圾</span>' : 
+                                            '<span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 whitespace-nowrap"><span class="w-1.5 h-1.5 mr-1.5 bg-green-400 rounded-full flex-shrink-0"></span>正常</span>'
                                         }
                                     </td>
-                                    <td class="px-6 py-4 text-sm">
-                                        <button type="button" data-message-id="${escapeHtml(h.message_id || '')}" onclick="reprocessTask(this.dataset.messageId)" class="inline-flex items-center px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 hover:border-blue-300 transition" title="下次运行将重新拉取并处理">
-                                            <svg class="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <td class="px-6 py-4 text-sm whitespace-nowrap">
+                                        <button type="button" data-message-id="${escapeHtml(h.message_id || '')}" onclick="reprocessTask(this.dataset.messageId)" class="inline-flex items-center px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 hover:border-blue-300 transition whitespace-nowrap flex-shrink-0" title="下次运行将重新拉取并处理">
+                                            <svg class="w-3 h-3 mr-1 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
                                             </svg>
-                                            重新处理
+                                            <span>重新处理</span>
                                         </button>
                                     </td>
                                 </tr>
@@ -1429,26 +1418,8 @@
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
                             ${errors.map(e => {
-                                let errorTime = '-';
-                                if (e.error_time) {
-                                    try {
-                                        const d = typeof e.error_time === 'string' ? new Date(e.error_time) : new Date(e.error_time);
-                                        if (!isNaN(d.getTime())) {
-                                            errorTime = d.toLocaleString('zh-CN', {
-                                                timeZone: 'Asia/Shanghai',
-                                                year: 'numeric',
-                                                month: '2-digit',
-                                                day: '2-digit',
-                                                hour: '2-digit',
-                                                minute: '2-digit',
-                                                second: '2-digit',
-                                                hour12: false
-                                            });
-                                        }
-                                    } catch (err) {
-                                        errorTime = typeof e.error_time === 'string' ? e.error_time : '-';
-                                    }
-                                }
+                                // Use formatTime function for consistent timezone handling
+                                const errorTime = formatTime(e.error_time);
                                 const messageId = e.message_id || '-';
                                 return `
                                 <tr class="table-row">
@@ -1552,7 +1523,7 @@
                         <div class="flex justify-between items-start mb-2">
                             <div class="flex items-center space-x-2">
                                 <span class="px-2 py-1 bg-blue-50 text-blue-700 rounded text-xs font-medium">${h.prompt_type}</span>
-                                <span class="text-xs text-gray-500">${h.created_at}</span>
+                                <span class="text-xs text-gray-500">${formatTime(h.created_at)}</span>
                             </div>
                             <button onclick="restorePrompt(${h.id})" class="bg-green-600 text-white px-3 py-1 rounded-lg hover:bg-green-700 text-xs font-medium transition">
                                 恢复
