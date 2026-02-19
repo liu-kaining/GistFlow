@@ -44,14 +44,15 @@ class NotionPublisher:
         logger.info(f"NotionPublisher initialized for database: {self.database_id[:8]}...")
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((HTTPResponseError, APIResponseError)),
+        stop=stop_after_attempt(5),  # Increased from 3 to 5 for better success rate
+        wait=wait_exponential(multiplier=2, min=2, max=30),  # Longer wait times: 2s, 4s, 8s, 16s, 30s
+        retry=retry_if_exception_type((HTTPResponseError, APIResponseError, ConnectionError, TimeoutError)),
         reraise=True,
     )
     def _create_page_with_retry(self, properties: dict) -> dict:
         """
         Create a Notion page with retry mechanism.
+        Uses aggressive retry strategy to maximize success rate.
 
         Args:
             properties: Notion page properties.
@@ -60,7 +61,7 @@ class NotionPublisher:
             Created page object from Notion API.
 
         Raises:
-            APIResponseError: If all retries fail.
+            APIResponseError: If all retries fail (after 5 attempts).
         """
         return self.client.pages.create(
             parent={"database_id": self.database_id},
@@ -68,14 +69,15 @@ class NotionPublisher:
         )
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((HTTPResponseError, APIResponseError)),
+        stop=stop_after_attempt(5),  # Increased from 3 to 5 for better success rate
+        wait=wait_exponential(multiplier=2, min=2, max=30),  # Longer wait times: 2s, 4s, 8s, 16s, 30s
+        retry=retry_if_exception_type((HTTPResponseError, APIResponseError, ConnectionError, TimeoutError)),
         reraise=True,
     )
     def _append_blocks_with_retry(self, page_id: str, blocks: list[dict]) -> dict:
         """
         Append content blocks to a Notion page with retry mechanism.
+        Uses aggressive retry strategy to maximize success rate.
 
         Args:
             page_id: The Notion page ID.
@@ -85,7 +87,7 @@ class NotionPublisher:
             API response.
 
         Raises:
-            APIResponseError: If all retries fail.
+            APIResponseError: If all retries fail (after 5 attempts).
         """
         return self.client.blocks.children.append(
             block_id=page_id,
@@ -166,6 +168,7 @@ class NotionPublisher:
     def _append_blocks_in_chunks(self, page_id: str, blocks: list[dict], email_content_start_index: Optional[int] = None) -> None:
         """
         Append content blocks in chunks to avoid Notion's limit.
+        Uses aggressive retry strategy to maximize success rate - only fails if all retries are exhausted.
 
         Args:
             page_id: The Notion page ID.
@@ -173,7 +176,7 @@ class NotionPublisher:
             email_content_start_index: Index of the block that starts email content section (if any).
             
         Raises:
-            APIResponseError: If critical chunks fail (e.g., first chunk, email content chunk, or all chunks fail).
+            APIResponseError: Only if all retries are exhausted for critical chunks (first chunk or email content chunk).
         """
         if not blocks:
             return
@@ -192,36 +195,37 @@ class NotionPublisher:
             chunk = blocks[i:i + chunk_size]
             chunk_num = i // chunk_size + 1
             try:
+                # _append_blocks_with_retry already has retry mechanism (5 attempts with exponential backoff)
+                # If it raises an exception, all retries have been exhausted
                 self._append_blocks_with_retry(page_id, chunk)
-            except (APIResponseError, HTTPResponseError) as e:
-                # Escape braces in error message to avoid Loguru formatting issues with JSON strings
+                logger.debug("Successfully appended chunk {}/{} to page {}", chunk_num, total_chunks, page_id)
+            except (APIResponseError, HTTPResponseError, ConnectionError, TimeoutError) as e:
+                # All retries have been exhausted at this point
                 error_msg = str(e).replace("{", "{{").replace("}", "}}")
-                logger.error("Failed to append blocks chunk {} to page {}: {}", chunk_num, page_id, error_msg)
+                logger.error("Failed to append blocks chunk {} to page {} after all retries: {}", chunk_num, page_id, error_msg)
                 failed_chunks.append(chunk_num)
                 last_exception = e
-                # If first chunk fails, this is critical - raise exception
-                if chunk_num == 1:
-                    logger.error("First chunk failed - this is critical, raising exception")
+                
+                # Only raise exception for critical chunks (first chunk or email content chunk)
+                # These are essential for the page to be meaningful
+                is_critical = (chunk_num == 1) or (email_content_chunk and chunk_num == email_content_chunk)
+                
+                if is_critical:
+                    logger.error("Critical chunk {} failed after all retries - cannot continue", chunk_num)
                     raise
-                # If email content chunk fails, this is also critical - raise exception
-                if email_content_chunk and chunk_num == email_content_chunk:
-                    logger.error("Email content chunk failed - this is critical, raising exception")
-                    raise
-                # Continue with next chunk if not critical chunk
-                continue
-            except (ConnectionError, TimeoutError) as e:
-                logger.error(f"Network error appending blocks chunk {chunk_num} to page {page_id}: {e}")
-                failed_chunks.append(chunk_num)
-                last_exception = e
-                # If first chunk or email content chunk fails due to network, also raise
-                if chunk_num == 1 or (email_content_chunk and chunk_num == email_content_chunk):
-                    raise
-                continue
+                else:
+                    # Non-critical chunk failed - log warning but continue
+                    logger.warning("Non-critical chunk {} failed after all retries - continuing with remaining chunks", chunk_num)
+                    continue
         
         # If all chunks failed, raise the last exception
         if len(failed_chunks) == total_chunks and last_exception:
-            logger.error("All {} chunks failed to append to page {}", total_chunks, page_id)
+            logger.error("All {} chunks failed to append to page {} after all retries", total_chunks, page_id)
             raise last_exception
+        
+        # Log summary if some chunks failed but not all
+        if failed_chunks:
+            logger.warning("Some chunks failed but page was created: failed chunks: {}/{}", len(failed_chunks), total_chunks)
 
     def _build_properties(self, gist: Gist) -> dict:
         """

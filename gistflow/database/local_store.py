@@ -329,28 +329,52 @@ class LocalStore:
             "avg_score": avg_score,
         }
 
-    def get_recent_processed(self, limit: int = 10) -> list[dict]:
+    def get_recent_processed(
+        self, 
+        limit: int = 10, 
+        offset: int = 0, 
+        search: Optional[str] = None
+    ) -> tuple[list[dict], int]:
         """
-        Get recently processed emails.
+        Get recently processed emails with pagination and search support.
 
         Args:
-            limit: Maximum number of records to return.
+            limit: Maximum number of records to return per page.
+            offset: Number of records to skip (for pagination).
+            search: Optional search term to filter by subject or sender.
 
         Returns:
-            List of recent processing records.
+            Tuple of (list of recent processing records, total count).
         """
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        cursor.execute("""
+        # Build WHERE clause for search
+        where_clause = ""
+        params: list = []
+        
+        if search:
+            where_clause = "WHERE subject LIKE ? OR sender LIKE ?"
+            search_pattern = f"%{search}%"
+            params = [search_pattern, search_pattern]
+        
+        # Get total count
+        count_query = f"SELECT COUNT(*) FROM processed_emails {where_clause}"
+        cursor.execute(count_query, params)
+        total_count = cursor.fetchone()[0]
+        
+        # Get paginated results
+        query = f"""
             SELECT message_id, subject, sender, processed_at, score, is_spam
             FROM processed_emails
+            {where_clause}
             ORDER BY processed_at DESC
-            LIMIT ?
-        """, (limit,))
-
+            LIMIT ? OFFSET ?
+        """
+        cursor.execute(query, params + [limit, offset])
+        
         rows = cursor.fetchall()
-        return [{key: row[key] for key in row.keys()} for row in rows]
+        return [{key: row[key] for key in row.keys()} for row in rows], total_count
 
     def close(self) -> None:
         """Close database connection(s)."""

@@ -633,18 +633,36 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
 
     @app.route("/api/tasks/history", methods=["GET"])
     def get_task_history() -> dict:
-        """Get task processing history."""
+        """Get task processing history with pagination and search."""
         try:
             local_store = app.config.get("local_store")
             if not local_store:
                 return jsonify({"error": "LocalStore not available"}), 503
 
+            # Parse query parameters
             try:
-                limit = int(request.args.get("limit", 50))
+                limit = int(request.args.get("limit", 20))
+                limit = max(1, min(limit, 100))  # Clamp between 1 and 100
             except (ValueError, TypeError):
-                limit = 50
+                limit = 20
 
-            history = local_store.get_recent_processed(limit=limit)
+            try:
+                page = int(request.args.get("page", 1))
+                page = max(1, page)  # Ensure page >= 1
+            except (ValueError, TypeError):
+                page = 1
+
+            search = request.args.get("search", "").strip()
+            search = search if search else None
+
+            offset = (page - 1) * limit
+
+            history, total_count = local_store.get_recent_processed(
+                limit=limit, 
+                offset=offset, 
+                search=search
+            )
+            
             # Convert datetime objects to strings for JSON serialization
             for item in history:
                 if "processed_at" in item and item["processed_at"]:
@@ -670,7 +688,18 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
                         except Exception:
                             # If conversion fails, set to None
                             item[key] = None
-            return jsonify({"history": history})
+            
+            total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+            
+            return jsonify({
+                "history": history,
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "total": total_count,
+                    "total_pages": total_pages
+                }
+            })
 
         except Exception as e:
             logger.exception(f"Failed to get task history: {e}")
