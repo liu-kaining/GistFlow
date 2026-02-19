@@ -253,9 +253,26 @@ class GistFlowPipeline:
 
             try:
                 # Fetch unprocessed emails
+                emails = []  # 初始化为空列表
                 with EmailFetcher(self.settings, self.local_store) as fetcher:
-                    self._last_run["phase"] = "正在获取邮件列表…"
-                    emails = fetcher.fetch_unprocessed()
+                    # 检查是否已被请求停止
+                    if self._shutdown_requested:
+                        logger.info("Shutdown requested before fetching emails")
+                        if self._last_run and self._last_run.get("running"):
+                            self._last_run["phase"] = "已中断"
+                        emails = []  # 设置为空列表，跳过后续处理
+                    else:
+                        self._last_run["phase"] = "正在获取邮件列表…"
+                        emails = fetcher.fetch_unprocessed()
+                        
+                        # 再次检查是否已被请求停止（可能在 fetch 过程中被停止）
+                        if self._shutdown_requested:
+                            logger.info("Shutdown requested after fetching emails")
+                            if self._last_run and self._last_run.get("running"):
+                                self._last_run["phase"] = "已中断"
+                            # 即使已获取邮件，也跳过处理
+                            emails = []
+                    
                     stats["emails_found"] = len(emails)
                     # 同步到 _last_run，便于前端轮询时看到进度
                     if self._last_run:

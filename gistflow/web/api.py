@@ -758,6 +758,12 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
                 return jsonify({"success": False, "error": "Pipeline not available"}), 503
 
             was_running = getattr(pipeline, "_is_running", False)
+            
+            # 如果任务正在运行，设置 shutdown_requested 来中断它
+            if was_running:
+                pipeline._shutdown_requested = True
+                logger.warning("Setting _shutdown_requested=True to interrupt running task")
+            
             pipeline._is_running = False
             
             # Also update _last_run if it's stuck
@@ -772,7 +778,7 @@ def create_app(pipeline_instance=None, local_store: Optional[LocalStore] = None)
             logger.warning(f"Task state forcefully reset (was_running={was_running})")
             return jsonify({
                 "success": True,
-                "message": "任务状态已重置，现在可以重新启动任务了",
+                "message": "任务状态已重置，正在执行的任务将被中断。现在可以重新启动任务了",
             })
 
         except Exception as e:
