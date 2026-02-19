@@ -90,7 +90,7 @@ class GistEngine:
             base_url=self.settings.OPENAI_BASE_URL,
             temperature=self.settings.LLM_TEMPERATURE,
             max_tokens=self.settings.LLM_MAX_TOKENS,
-            timeout=60,
+            timeout=180,  # Increased timeout to 180 seconds for large content processing
         )
 
     def _load_prompts(self) -> None:
@@ -180,16 +180,23 @@ class GistEngine:
         import json
         import re
 
+        logger.info("Starting LLM call (structured output)...")
+        call_start_time = time.time()
+
         # Try structured output first
         try:
             structured_llm = self.llm.with_structured_output(Gist)
+            logger.info("Invoking LLM with structured output...")
             gist = structured_llm.invoke(messages)
+            elapsed = time.time() - call_start_time
+            logger.info(f"LLM structured output completed in {elapsed:.2f}s")
             # Normalize mentioned_links in case LLM returns objects
             gist = self._normalize_gist_links(gist)
             return gist
         except (ValidationError, ValueError, TypeError, KeyError, AttributeError) as e:
             # If structured output fails (e.g., validation error, type mismatch), fall back to manual parsing
-            logger.debug(f"Structured output failed, falling back to manual parsing: {e}")
+            elapsed = time.time() - call_start_time
+            logger.debug(f"Structured output failed after {elapsed:.2f}s, falling back to manual parsing: {e}")
             pass  # Fall through to manual parsing
         except Exception as e:
             # Handle LengthFinishReasonError and other unexpected errors
@@ -216,8 +223,13 @@ class GistEngine:
                 raise
 
         # Fallback: invoke directly and parse JSON manually
+        logger.info("Falling back to manual JSON parsing...")
+        fallback_start_time = time.time()
         try:
+            logger.info("Invoking LLM without structured output...")
             response = self.llm.invoke(messages)
+            elapsed = time.time() - fallback_start_time
+            logger.info(f"LLM invoke completed in {elapsed:.2f}s")
             raw_content = response.content if hasattr(response, 'content') else str(response)
         except Exception as e:
             error_str = str(e)
@@ -246,13 +258,18 @@ class GistEngine:
 
         # Parse JSON and create Gist
         try:
+            logger.debug("Parsing LLM response JSON...")
             data = json.loads(json_str)
             
             # Normalize mentioned_links: handle both string list and object list
             data = self._normalize_data_links(data)
             
+            total_elapsed = time.time() - call_start_time
+            logger.debug(f"Successfully parsed Gist from LLM response (total elapsed: {total_elapsed:.2f}s)")
             return Gist(**data)
         except (json.JSONDecodeError, TypeError) as e:
+            total_elapsed = time.time() - call_start_time
+            logger.error(f"Failed to parse LLM output as Gist after {total_elapsed:.2f}s: {e}")
             raise ValueError(f"Failed to parse LLM output as Gist: {e}")
 
     def _normalize_gist_links(self, gist: Gist) -> Gist:
@@ -345,8 +362,10 @@ class GistEngine:
 
             # Invoke LLM with retry
             start_time = time.time()
+            logger.info(f"Calling LLM API (model: {self.settings.LLM_MODEL_NAME}, base_url: {self.settings.OPENAI_BASE_URL})...")
             gist = self._call_llm(messages)
             elapsed = time.time() - start_time
+            logger.info(f"LLM call completed successfully in {elapsed:.2f}s")
 
             # Fill metadata fields
             gist.original_id = original_id

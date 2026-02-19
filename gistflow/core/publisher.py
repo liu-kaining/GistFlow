@@ -120,7 +120,9 @@ class NotionPublisher:
 
             # Step 2: Append content blocks
             blocks = self._build_content_blocks(gist)
-            self._append_blocks_in_chunks(page_id, blocks)
+            # Track which block index starts the email content section
+            email_content_start_index = self._find_email_content_start_index(blocks)
+            self._append_blocks_in_chunks(page_id, blocks, email_content_start_index)
 
             logger.info(f"Successfully published gist to Notion: {gist.title}")
             return page_id
@@ -143,30 +145,83 @@ class NotionPublisher:
             logger.error(f"Connection error publishing to Notion for '{gist.title}': {e}")
             return None
 
-    def _append_blocks_in_chunks(self, page_id: str, blocks: list[dict]) -> None:
+    def _find_email_content_start_index(self, blocks: list[dict]) -> Optional[int]:
+        """
+        Find the index of the block that starts the email content section.
+        
+        Args:
+            blocks: List of block dictionaries.
+            
+        Returns:
+            Index of the email content heading block, or None if not found.
+        """
+        for i, block in enumerate(blocks):
+            if block.get("type") == "heading_2":
+                heading = block.get("heading_2", {})
+                rich_text = heading.get("rich_text", [])
+                if rich_text and rich_text[0].get("text", {}).get("content") == "📧 邮件原文":
+                    return i
+        return None
+
+    def _append_blocks_in_chunks(self, page_id: str, blocks: list[dict], email_content_start_index: Optional[int] = None) -> None:
         """
         Append content blocks in chunks to avoid Notion's limit.
 
         Args:
             page_id: The Notion page ID.
             blocks: List of block dictionaries to append.
+            email_content_start_index: Index of the block that starts email content section (if any).
+            
+        Raises:
+            APIResponseError: If critical chunks fail (e.g., first chunk, email content chunk, or all chunks fail).
         """
         if not blocks:
             return
 
         chunk_size = 100  # Notion has a limit of 100 blocks per request
+        failed_chunks = []
+        total_chunks = (len(blocks) + chunk_size - 1) // chunk_size
+        last_exception = None
+        
+        # Calculate which chunk contains the email content
+        email_content_chunk = None
+        if email_content_start_index is not None:
+            email_content_chunk = (email_content_start_index // chunk_size) + 1
 
         for i in range(0, len(blocks), chunk_size):
             chunk = blocks[i:i + chunk_size]
+            chunk_num = i // chunk_size + 1
             try:
                 self._append_blocks_with_retry(page_id, chunk)
             except (APIResponseError, HTTPResponseError) as e:
-                logger.error(f"Failed to append blocks chunk {i//chunk_size + 1} to page {page_id}: {e}")
-                # Continue with next chunk even if one fails
+                # Escape braces in error message to avoid Loguru formatting issues with JSON strings
+                error_msg = str(e).replace("{", "{{").replace("}", "}}")
+                logger.error("Failed to append blocks chunk {} to page {}: {}", chunk_num, page_id, error_msg)
+                failed_chunks.append(chunk_num)
+                last_exception = e
+                # If first chunk fails, this is critical - raise exception
+                if chunk_num == 1:
+                    logger.error("First chunk failed - this is critical, raising exception")
+                    raise
+                # If email content chunk fails, this is also critical - raise exception
+                if email_content_chunk and chunk_num == email_content_chunk:
+                    logger.error("Email content chunk failed - this is critical, raising exception")
+                    raise
+                # Continue with next chunk if not critical chunk
                 continue
             except (ConnectionError, TimeoutError) as e:
-                logger.error(f"Network error appending blocks chunk {i//chunk_size + 1} to page {page_id}: {e}")
+                logger.error(f"Network error appending blocks chunk {chunk_num} to page {page_id}: {e}")
+                failed_chunks.append(chunk_num)
+                last_exception = e
+                # If first chunk or email content chunk fails due to network, also raise
+                if chunk_num == 1 or (email_content_chunk and chunk_num == email_content_chunk):
+                    raise
                 continue
+        
+        # If all chunks failed, raise the last exception
+        if len(failed_chunks) == total_chunks and last_exception:
+            logger.error("All {} chunks failed to append to page {}", total_chunks, page_id)
+            raise last_exception
 
     def _build_properties(self, gist: Gist) -> dict:
         """
@@ -342,7 +397,11 @@ class NotionPublisher:
                     "type": "paragraph",
                     "paragraph": {
                         "rich_text": [
-                            {"type": "text", "text": {"content": "发件人: ", "annotations": {"bold": True, "color": "gray"}}},
+                            {
+                                "type": "text",
+                                "text": {"content": "发件人: "},
+                                "annotations": {"bold": True, "color": "gray"}
+                            },
                             {"type": "text", "text": {"content": gist.sender[:100]}},
                         ]
                     }
@@ -356,7 +415,11 @@ class NotionPublisher:
                     "type": "paragraph",
                     "paragraph": {
                         "rich_text": [
-                            {"type": "text", "text": {"content": "日期: ", "annotations": {"bold": True, "color": "gray"}}},
+                            {
+                                "type": "text",
+                                "text": {"content": "日期: "},
+                                "annotations": {"bold": True, "color": "gray"}
+                            },
                             {"type": "text", "text": {"content": date_str}},
                         ]
                     }
@@ -370,11 +433,15 @@ class NotionPublisher:
                     "type": "paragraph",
                     "paragraph": {
                         "rich_text": [
-                            {"type": "text", "text": {"content": "链接: ", "annotations": {"bold": True, "color": "gray"}}},
+                            {
+                                "type": "text",
+                                "text": {"content": "链接: "},
+                                "annotations": {"bold": True, "color": "gray"}
+                            },
                             {
                                 "type": "text",
                                 "text": {"content": url_text, "link": {"url": url_link}} if url_link else {"content": url_text},
-                                "annotations": {"color": "blue"},
+                                "annotations": {"color": "blue"}
                             },
                         ]
                     }
@@ -427,7 +494,7 @@ class NotionPublisher:
                     "rich_text": [{
                         "type": "text",
                         "text": {"content": _truncate_for_notion(metadata)},
-                        "annotations": {"color": "gray", "italic": True},
+                        "annotations": {"color": "gray", "italic": True}
                     }]
                 }
             })
