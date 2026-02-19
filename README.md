@@ -85,9 +85,9 @@ Gmail Newsletter
 
 ```
 GistFlow/
-├── gistflow/
+├── gistflow/                # 主代码包
 │   ├── config/              # Pydantic 配置管理
-│   ├── core/
+│   ├── core/                # 核心业务逻辑
 │   │   ├── ingestion.py     # Gmail IMAP 邮件获取
 │   │   ├── cleaner.py       # HTML→Markdown 清洗
 │   │   ├── llm_engine.py    # LLM 智能提取
@@ -96,13 +96,22 @@ GistFlow/
 │   ├── database/            # SQLite 去重存储
 │   ├── models/              # Pydantic 数据模型
 │   ├── utils/               # 日志等工具
-│   └── web/                 # Flask REST API
-├── prompts/                 # Prompt 模板文件
+│   └── web/                 # Flask REST API + Web UI
+├── prompts/                 # Prompt 模板文件（可挂载编辑）
+├── tests/                   # 测试文件
+├── docs/                    # 完整文档
+│   ├── GUIDE.md            # 使用指南
+│   ├── DEV_READINESS.md     # 开发准备摘要
+│   ├── PROJECT_STRUCTURE.md # 项目结构说明
+│   └── spec/                # 项目规范文档
 ├── main.py                  # 主程序入口
 ├── Dockerfile               # Docker 镜像（国内镜像源）
 ├── docker-compose.yml       # 容器编排
-└── docs/                    # 完整文档
+├── requirements.txt         # Python 依赖
+└── .env.example            # 配置模板
 ```
+
+> 📖 详细结构说明请查看 [docs/PROJECT_STRUCTURE.md](./docs/PROJECT_STRUCTURE.md)
 
 ---
 

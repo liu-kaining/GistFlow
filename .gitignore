@@ -211,12 +211,19 @@ __marimo__/
 data/
 *.db
 *.sqlite3
+*.db-journal
 
 # Log files
 logs/
+*.log
 
 # Local development
 .env.local
 .env.*.local
 
+# Generated gists (local storage)
 .gists
+data/gists/
+
+# Prompt history (stored in database, not files)
+prompts/.history/
