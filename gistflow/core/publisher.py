@@ -245,32 +245,60 @@ class NotionPublisher:
         """
         blocks: list[dict] = []
 
-        # Block 1: Key Insights (Callout)
-        if gist.key_insights:
-            insights_text = "\n".join([f"• {insight}" for insight in gist.key_insights])
+        # Block 1: Summary (if available, show in content area for better readability)
+        if gist.summary:
             blocks.append({
                 "object": "block",
-                "type": "callout",
-                "callout": {
-                    "rich_text": [{"type": "text", "text": {"content": _truncate_for_notion(insights_text)}}],
-                    "icon": {"emoji": "💡"},
-                    "color": "blue_background",
+                "type": "heading_2",
+                "heading_2": {
+                    "rich_text": [{"type": "text", "text": {"content": "📋 摘要"}}],
                 }
             })
+            blocks.append({
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{"type": "text", "text": {"content": _truncate_for_notion(gist.summary)}}],
+                }
+            })
+            blocks.append({
+                "object": "block",
+                "type": "divider",
+                "divider": {}
+            })
 
-        # Block 2: Divider
-        blocks.append({
-            "object": "block",
-            "type": "divider",
-            "divider": {}
-        })
+        # Block 2: Key Insights (use proper bulleted list instead of Callout)
+        if gist.key_insights:
+            blocks.append({
+                "object": "block",
+                "type": "heading_2",
+                "heading_2": {
+                    "rich_text": [{"type": "text", "text": {"content": "💡 核心要点"}}],
+                }
+            })
+            
+            # Use proper bulleted_list_item blocks for better structure
+            for insight in gist.key_insights:
+                blocks.append({
+                    "object": "block",
+                    "type": "bulleted_list_item",
+                    "bulleted_list_item": {
+                        "rich_text": [{"type": "text", "text": {"content": _truncate_for_notion(insight)}}],
+                    }
+                })
+            
+            blocks.append({
+                "object": "block",
+                "type": "divider",
+                "divider": {}
+            })
 
         # Block 3: Mentioned Links (if any)
         if gist.mentioned_links:
             blocks.append({
                 "object": "block",
-                "type": "heading_3",
-                "heading_3": {
+                "type": "heading_2",
+                "heading_2": {
                     "rich_text": [{"type": "text", "text": {"content": "📎 相关链接"}}],
                 }
             })
@@ -289,59 +317,120 @@ class NotionPublisher:
                         }]
                     }
                 })
+            
+            blocks.append({
+                "object": "block",
+                "type": "divider",
+                "divider": {}
+            })
 
-        # Block 4: Another Divider
-        blocks.append({
-            "object": "block",
-            "type": "divider",
-            "divider": {}
-        })
-
-        # Block 5: Raw Markdown Content (in Toggle for readability)
+        # Block 4: Raw Email Content (displayed directly, styled like email)
         if gist.raw_markdown:
             blocks.append({
                 "object": "block",
-                "type": "heading_3",
-                "heading_3": {
-                    "rich_text": [{"type": "text", "text": {"content": "📄 原文内容"}}],
+                "type": "heading_2",
+                "heading_2": {
+                    "rich_text": [{"type": "text", "text": {"content": "📧 邮件原文"}}],
                 }
             })
-
-            # Split content into chunks (Notion rich_text limit is 2000 chars per block)
+            
+            # Add email header info (like email clients do)
+            email_header_blocks = []
+            if gist.sender:
+                email_header_blocks.append({
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [
+                            {"type": "text", "text": {"content": "发件人: ", "annotations": {"bold": True, "color": "gray"}}},
+                            {"type": "text", "text": {"content": gist.sender[:100]}},
+                        ]
+                    }
+                })
+            
+            if gist.received_at:
+                from datetime import datetime
+                date_str = gist.received_at.strftime("%Y年%m月%d日 %H:%M") if isinstance(gist.received_at, datetime) else str(gist.received_at)
+                email_header_blocks.append({
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [
+                            {"type": "text", "text": {"content": "日期: ", "annotations": {"bold": True, "color": "gray"}}},
+                            {"type": "text", "text": {"content": date_str}},
+                        ]
+                    }
+                })
+            
+            if gist.original_url:
+                url_text = _truncate_for_notion(gist.original_url[:100])
+                url_link = gist.original_url[:2000] if gist.original_url.startswith("http") else None
+                email_header_blocks.append({
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [
+                            {"type": "text", "text": {"content": "链接: ", "annotations": {"bold": True, "color": "gray"}}},
+                            {
+                                "type": "text",
+                                "text": {"content": url_text, "link": {"url": url_link}} if url_link else {"content": url_text},
+                                "annotations": {"color": "blue"},
+                            },
+                        ]
+                    }
+                })
+            
+            # Add divider after header
+            if email_header_blocks:
+                blocks.extend(email_header_blocks)
+                blocks.append({
+                    "object": "block",
+                    "type": "divider",
+                    "divider": {}
+                })
+            
+            # Split content into chunks and display directly (no toggle, fully visible)
+            # This allows users to verify AI summary/classification/score accuracy
             content_blocks = self._split_content_to_blocks(gist.raw_markdown)
+            
+            # Add all content blocks directly - styled like email body
+            # Use quote blocks for email-like indentation and styling
+            for block in content_blocks:
+                if block.get("type") == "paragraph":
+                    # Convert to quote block for email-like appearance (indented, gray background)
+                    quote_block = {
+                        "object": "block",
+                        "type": "quote",
+                        "quote": {
+                            "rich_text": block["paragraph"]["rich_text"],
+                        }
+                    }
+                    blocks.append(quote_block)
+                else:
+                    # Keep other block types as-is (headings, lists, etc.)
+                    blocks.append(block)
 
-            # Add toggle block containing the content
-            blocks.append({
-                "object": "block",
-                "type": "toggle",
-                "toggle": {
-                    "rich_text": [{"type": "text", "text": {"content": "点击展开查看原文"}}],
-                    "children": content_blocks,
-                }
-            })
-
-        # Block 6: Metadata footer
+        # Block 5: Metadata footer (simplified, since sender is already in Properties)
         blocks.append({
             "object": "block",
             "type": "divider",
             "divider": {}
         })
 
-        metadata = f"📧 来源: {gist.sender or 'Unknown'}"
+        # Only show ID if available, sender is redundant (already in Properties)
         if gist.original_id:
-            metadata += f" | ID: {gist.original_id[:20]}"
-
-        blocks.append({
-            "object": "block",
-            "type": "paragraph",
-            "paragraph": {
-                "rich_text": [{
-                    "type": "text",
-                    "text": {"content": _truncate_for_notion(metadata)},
-                    "annotations": {"color": "gray", "italic": True},
-                }]
-            }
-        })
+            metadata = f"📧 Message ID: {gist.original_id[:20]}"
+            blocks.append({
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{
+                        "type": "text",
+                        "text": {"content": _truncate_for_notion(metadata)},
+                        "annotations": {"color": "gray", "italic": True},
+                    }]
+                }
+            })
 
         return blocks
 
