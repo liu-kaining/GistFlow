@@ -161,7 +161,7 @@ class GistEngine:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((APIConnectionError, APITimeoutError, RateLimitError)),
+        retry=retry_if_exception_type((APIConnectionError, APITimeoutError, RateLimitError, APIError)),
         reraise=True,
     )
     def _call_llm(self, messages: list) -> Gist:
@@ -191,10 +191,50 @@ class GistEngine:
             # If structured output fails (e.g., validation error, type mismatch), fall back to manual parsing
             logger.debug(f"Structured output failed, falling back to manual parsing: {e}")
             pass  # Fall through to manual parsing
+        except Exception as e:
+            # Handle LengthFinishReasonError and other unexpected errors
+            error_str = str(e)
+            if "length limit" in error_str.lower() or "lengthfinishreasonerror" in error_str.lower():
+                logger.warning(f"LLM response reached token limit, attempting to parse partial response: {e}")
+                # Try to extract partial content from error message or response
+                # Some APIs include partial content in the error
+                if hasattr(e, 'response') and hasattr(e.response, 'choices'):
+                    # Try to get partial content from response
+                    try:
+                        partial_content = e.response.choices[0].message.content if e.response.choices else None
+                        if partial_content:
+                            raw_content = partial_content
+                            # Fall through to manual parsing below
+                        else:
+                            raise ValueError("No partial content available in truncated response")
+                    except:
+                        raise ValueError(f"LLM response truncated at token limit and cannot be parsed: {e}")
+                else:
+                    raise ValueError(f"LLM response truncated at token limit: {e}")
+            else:
+                # Re-raise other exceptions
+                raise
 
         # Fallback: invoke directly and parse JSON manually
-        response = self.llm.invoke(messages)
-        raw_content = response.content if hasattr(response, 'content') else str(response)
+        try:
+            response = self.llm.invoke(messages)
+            raw_content = response.content if hasattr(response, 'content') else str(response)
+        except Exception as e:
+            error_str = str(e)
+            if "length limit" in error_str.lower() or "lengthfinishreasonerror" in error_str.lower():
+                # If invoke also fails due to length limit, try to get partial content
+                if hasattr(e, 'response') and hasattr(e.response, 'choices'):
+                    try:
+                        partial_content = e.response.choices[0].message.content if e.response.choices else None
+                        if partial_content:
+                            raw_content = partial_content
+                            logger.warning("Using partial content from truncated response")
+                        else:
+                            raise ValueError(f"LLM response truncated at token limit and cannot be parsed: {e}")
+                    except:
+                        raise ValueError(f"LLM response truncated at token limit: {e}")
+            else:
+                raise
 
         # Try to extract JSON from markdown code blocks
         json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', raw_content, re.DOTALL)
@@ -325,10 +365,20 @@ class GistEngine:
             logger.error(f"LLM API error after retries for {original_id}: {e}")
             return None
         except APIError as e:
-            logger.error(f"LLM API error for {original_id}: {e}")
+            error_str = str(e)
+            # Handle LengthFinishReasonError (token limit reached)
+            if "length limit" in error_str.lower() or "lengthfinishreasonerror" in error_str.lower():
+                logger.error(f"LLM response reached token limit for {original_id}: {e}. Consider increasing LLM_MAX_TOKENS or truncating input content.")
+            else:
+                logger.error(f"LLM API error for {original_id}: {e}")
             return None
         except ValueError as e:
-            logger.error(f"LLM output parsing error for {original_id}: {e}")
+            error_str = str(e)
+            # Handle token limit errors in ValueError
+            if "length limit" in error_str.lower() or "truncated" in error_str.lower():
+                logger.error(f"LLM output parsing error (token limit) for {original_id}: {e}. Consider increasing LLM_MAX_TOKENS.")
+            else:
+                logger.error(f"LLM output parsing error for {original_id}: {e}")
             return None
         except ValidationError as e:
             logger.error(f"Gist validation error for {original_id}: {e}")

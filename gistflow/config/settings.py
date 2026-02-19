@@ -117,8 +117,8 @@ class Settings(BaseSettings):
         le=2.0,
     )
     LLM_MAX_TOKENS: int = Field(
-        default=2000,
-        description="Maximum tokens for LLM response",
+        default=10000,
+        description="Maximum tokens for LLM response (for processing email content, larger values allow more detailed extraction)",
         gt=0,
     )
 
